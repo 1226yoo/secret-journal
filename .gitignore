@@ -1,0 +1,15 @@
+# 1. 라이브러리 (서버에서 새로 설치하면 됨)
+node_modules/
+
+# 2. 보안 파일 (유출되면 큰일남)
+.env
+.env.local
+.env.production
+*.sqlite
+
+# 3. 빌드 결과물 및 시스템 파일
+dist/
+.DS_Store
+
+# 4. 사용자가 업로드한 실제 사진들
+server/uploads/
