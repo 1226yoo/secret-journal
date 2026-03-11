@@ -1,44 +1,40 @@
 import React, { useState, useEffect } from "react";
 
 /**
- * [수정된 최종 통합 버전] Secret Journal App
- * 1. Virtual Routing: 로그인/회원가입/홈 화면 분리
- * 2. Media: 이미지 업로드 및 미리보기 (FormData 활용)
- * 3. Search: 메모 실시간 필터링
- * 4. Env: 환경 변수 접근 방식 보완 (Target Environment 호환성 개선)
+ * [최종 통합 버전] Secret Journal App
+ * 1. Security: HTTPS 환경 세션 유지 (credentials: "include")
+ * 2. Features: 검색, 수정, 삭제, 이미지 업로드 전체 포함
+ * 3. Robustness: API_URL 정규화 및 환경 변수 안전 로드
  */
 
 const App = () => {
-  // --- Global States ---
-  const [view, setView] = useState("login"); // 'login' | 'signup' | 'home'
+  const [view, setView] = useState("login");
   const [user, setUser] = useState(null);
   const [notes, setNotes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [serverError, setServerError] = useState(false);
 
-  // 환경 변수 접근 시 안전한 체크 로직 추가
+  // 환경 변수 안전 로드 및 슬래시 제거
   const getApiUrl = () => {
+    let url = "http://localhost:5000";
     try {
-      // Vite 환경 변수 확인 (target 환경 호환성을 위해 체크 추가)
       if (
         typeof import.meta !== "undefined" &&
         import.meta.env &&
         import.meta.env.VITE_API_URL
       ) {
-        return import.meta.env.VITE_API_URL;
+        url = import.meta.env.VITE_API_URL;
       }
     } catch (e) {
-      console.warn("Environment variables not accessible, using default.");
+      console.warn("Using default API URL due to env access error.");
     }
-    return "http://localhost:5000"; // 기본값
+    return url.replace(/\/$/, "");
   };
 
   const API_URL = getApiUrl();
 
-  // --- Initialization ---
   useEffect(() => {
     checkLoginStatus();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const checkLoginStatus = async () => {
@@ -85,7 +81,6 @@ const App = () => {
     }
   };
 
-  // --- Error & Loading Views ---
   if (serverError)
     return (
       <div className="flex h-screen flex-col items-center justify-center bg-slate-50 p-6 text-center">
@@ -93,17 +88,12 @@ const App = () => {
         <h2 className="mb-2 text-2xl font-bold text-slate-800">
           서버 연결 오류
         </h2>
-        <p className="mb-6 text-slate-500 font-medium">
-          백엔드 서버가 실행 중인지, 혹은{" "}
-          <code className="bg-slate-200 px-1 rounded">.env</code>의 주소가
-          맞는지 확인해 주세요.
-          <br />
-          현재 설정된 주소:{" "}
-          <span className="text-blue-600 underline">{API_URL}</span>
+        <p className="mb-6 text-slate-500">
+          배포된 서버 주소({API_URL})가 올바른지 확인해 주세요.
         </p>
         <button
           onClick={checkLoginStatus}
-          className="rounded-2xl bg-blue-600 px-8 py-3 font-bold text-white shadow-lg hover:bg-blue-700 transition-all active:scale-95"
+          className="rounded-2xl bg-blue-600 px-8 py-3 font-bold text-white shadow-lg hover:bg-blue-700 transition-all"
         >
           다시 시도
         </button>
@@ -112,12 +102,11 @@ const App = () => {
 
   if (loading)
     return (
-      <div className="flex h-screen items-center justify-center bg-slate-50 font-bold text-slate-400 uppercase tracking-widest animate-pulse">
-        Connecting to Vault...
+      <div className="flex h-screen items-center justify-center font-bold text-slate-400 animate-pulse uppercase tracking-widest">
+        Vault Connecting...
       </div>
     );
 
-  // --- Router ---
   const renderView = () => {
     switch (view) {
       case "login":
@@ -160,9 +149,7 @@ const App = () => {
   );
 };
 
-/**
- * 🔐 Login Component
- */
+/** 🔐 Login Page */
 const LoginPage = ({ setView, setUser, fetchNotes, API_URL }) => {
   const [id, setId] = useState("");
   const [pw, setPw] = useState("");
@@ -181,29 +168,23 @@ const LoginPage = ({ setView, setUser, fetchNotes, API_URL }) => {
         setView("home");
         fetchNotes();
       } else {
-        const data = await res.json();
-        alert(data.message || "Login failed");
+        alert("로그인 정보가 올바르지 않습니다.");
       }
     } catch (err) {
-      alert("Server connection error. Check your API URL.");
+      alert("서버 연결 실패");
     }
   };
 
   return (
     <div className="flex h-screen items-center justify-center px-4">
-      <div className="w-full max-w-sm rounded-3xl bg-white p-10 shadow-2xl transition-all">
-        <header className="mb-10 text-center">
-          <h1 className="text-3xl font-black italic tracking-tighter text-slate-800">
-            VAULT
-          </h1>
-          <p className="mt-2 text-xs font-bold text-slate-400 uppercase tracking-widest">
-            Secret Management
-          </p>
-        </header>
+      <div className="w-full max-w-sm rounded-3xl bg-white p-10 shadow-2xl">
+        <h1 className="mb-10 text-center text-3xl font-black italic tracking-tighter text-slate-800">
+          VAULT
+        </h1>
         <form onSubmit={onLogin} className="space-y-4">
           <input
             type="text"
-            className="w-full rounded-2xl bg-slate-50 p-4 outline-none ring-blue-500 focus:ring-2 transition-all"
+            className="w-full rounded-2xl bg-slate-50 p-4 outline-none focus:ring-2 focus:ring-blue-500"
             placeholder="ID"
             value={id}
             onChange={(e) => setId(e.target.value)}
@@ -211,7 +192,7 @@ const LoginPage = ({ setView, setUser, fetchNotes, API_URL }) => {
           />
           <input
             type="password"
-            className="w-full rounded-2xl bg-slate-50 p-4 outline-none ring-blue-500 focus:ring-2 transition-all"
+            className="w-full rounded-2xl bg-slate-50 p-4 outline-none focus:ring-2 focus:ring-blue-500"
             placeholder="PW"
             value={pw}
             onChange={(e) => setPw(e.target.value)}
@@ -223,7 +204,7 @@ const LoginPage = ({ setView, setUser, fetchNotes, API_URL }) => {
         </form>
         <button
           onClick={() => setView("signup")}
-          className="mt-6 w-full text-sm font-bold text-slate-300 hover:text-blue-500 transition-colors"
+          className="mt-6 w-full text-sm font-bold text-slate-300 hover:text-blue-500"
         >
           계정이 없으신가요? 회원가입
         </button>
@@ -232,9 +213,7 @@ const LoginPage = ({ setView, setUser, fetchNotes, API_URL }) => {
   );
 };
 
-/**
- * 📝 Signup Component
- */
+/** 📝 Signup Page */
 const SignupPage = ({ setView, API_URL }) => {
   const [id, setId] = useState("");
   const [pw, setPw] = useState("");
@@ -255,25 +234,20 @@ const SignupPage = ({ setView, API_URL }) => {
         alert(data.message);
       }
     } catch (err) {
-      alert("Server connection error");
+      alert("서버 연결 실패");
     }
   };
 
   return (
     <div className="flex h-screen items-center justify-center px-4">
       <div className="w-full max-w-sm rounded-3xl bg-white p-10 shadow-2xl">
-        <header className="mb-10 text-center">
-          <h1 className="text-3xl font-black italic tracking-tighter text-slate-800">
-            JOIN
-          </h1>
-          <p className="mt-2 text-xs font-bold text-slate-400 uppercase tracking-widest">
-            Create Private ID
-          </p>
-        </header>
+        <h1 className="mb-10 text-center text-3xl font-black italic tracking-tighter text-slate-800">
+          JOIN
+        </h1>
         <form onSubmit={onSignup} className="space-y-4">
           <input
             type="text"
-            className="w-full rounded-2xl bg-slate-50 p-4 outline-none ring-blue-500 focus:ring-2 transition-all"
+            className="w-full rounded-2xl bg-slate-50 p-4 outline-none focus:ring-2 focus:ring-blue-500"
             placeholder="New ID"
             value={id}
             onChange={(e) => setId(e.target.value)}
@@ -281,7 +255,7 @@ const SignupPage = ({ setView, API_URL }) => {
           />
           <input
             type="password"
-            className="w-full rounded-2xl bg-slate-50 p-4 outline-none ring-blue-500 focus:ring-2 transition-all"
+            className="w-full rounded-2xl bg-slate-50 p-4 outline-none focus:ring-2 focus:ring-blue-500"
             placeholder="New PW"
             value={pw}
             onChange={(e) => setPw(e.target.value)}
@@ -293,7 +267,7 @@ const SignupPage = ({ setView, API_URL }) => {
         </form>
         <button
           onClick={() => setView("login")}
-          className="mt-6 w-full text-sm font-bold text-slate-300 hover:text-slate-500 transition-colors"
+          className="mt-6 w-full text-sm font-bold text-slate-300 hover:text-slate-500"
         >
           이미 계정이 있나요? 로그인
         </button>
@@ -302,9 +276,7 @@ const SignupPage = ({ setView, API_URL }) => {
   );
 };
 
-/**
- * 🏠 Home Component (Main)
- */
+/** 🏠 Home Page */
 const HomePage = ({ user, notes, setNotes, handleLogout, API_URL }) => {
   const [newNote, setNewNote] = useState("");
   const [image, setImage] = useState(null);
@@ -341,18 +313,17 @@ const HomePage = ({ user, notes, setNotes, handleLogout, API_URL }) => {
         setNewNote("");
         setImage(null);
         setPreview(null);
+      } else {
+        const errData = await res.json();
+        alert("저장 실패: " + errData.message);
       }
     } catch (err) {
-      alert("Failed to save note. Check server connection.");
+      alert("서버 연결 실패");
     }
   };
 
   const deleteNote = async (id) => {
-    if (
-      !window.confirm(
-        "정말로 이 기록을 삭제하시겠습니까? (연결된 사진도 삭제됩니다)",
-      )
-    )
+    if (!window.confirm("기록을 삭제하시겠습니까? (연결된 사진도 삭제됩니다)"))
       return;
     try {
       const res = await fetch(`${API_URL}/api/notes/${id}`, {
@@ -361,7 +332,7 @@ const HomePage = ({ user, notes, setNotes, handleLogout, API_URL }) => {
       });
       if (res.ok) setNotes(notes.filter((n) => n.id !== id));
     } catch (err) {
-      alert("Server connection error");
+      alert("삭제 실패");
     }
   };
 
@@ -382,7 +353,7 @@ const HomePage = ({ user, notes, setNotes, handleLogout, API_URL }) => {
         setEditingId(null);
       }
     } catch (err) {
-      alert("Server connection error");
+      alert("수정 실패");
     }
   };
 
@@ -394,12 +365,10 @@ const HomePage = ({ user, notes, setNotes, handleLogout, API_URL }) => {
     <div className="mx-auto max-w-2xl px-6 py-16">
       <header className="mb-12 flex items-end justify-between">
         <div>
-          <h1 className="text-4xl font-black italic tracking-tighter text-slate-900">
+          <h1 className="text-4xl font-black italic tracking-tighter text-slate-800">
             {user?.username}'s Vault.
           </h1>
-          <p className="font-medium text-slate-400">
-            오직 당신만 읽을 수 있는 기록들입니다.
-          </p>
+          <p className="font-medium text-slate-400">당신만의 비밀 기록 공간</p>
         </div>
         <button
           onClick={handleLogout}
@@ -415,11 +384,10 @@ const HomePage = ({ user, notes, setNotes, handleLogout, API_URL }) => {
           <textarea
             className="w-full resize-none border-none bg-transparent p-6 text-lg outline-none"
             rows="3"
-            placeholder="오늘의 비밀을 기록하세요..."
+            placeholder="비밀을 남기세요..."
             value={newNote}
             onChange={(e) => setNewNote(e.target.value)}
           />
-
           {preview && (
             <div className="px-6 pb-4 flex items-center gap-4">
               <img
@@ -439,7 +407,6 @@ const HomePage = ({ user, notes, setNotes, handleLogout, API_URL }) => {
               </button>
             </div>
           )}
-
           <div className="flex items-center justify-between p-4 pt-0">
             <label className="cursor-pointer rounded-xl bg-slate-50 px-4 py-2.5 text-xs font-bold text-slate-400 hover:bg-slate-100 transition-colors">
               📸 사진 첨부
@@ -450,30 +417,22 @@ const HomePage = ({ user, notes, setNotes, handleLogout, API_URL }) => {
                 onChange={handleImageChange}
               />
             </label>
-            <button className="rounded-2xl bg-slate-900 px-8 py-2.5 text-sm font-bold text-white hover:bg-slate-800 transition-transform active:scale-95">
+            <button className="rounded-2xl bg-slate-900 px-8 py-2.5 text-sm font-bold text-white shadow-lg active:scale-95 transition-transform">
               Save Secret
             </button>
           </div>
         </div>
       </form>
 
-      {/* Search Bar */}
+      {/* Search */}
       <div className="mb-8 relative group">
         <input
           type="text"
-          placeholder="비밀 기록 검색하기..."
+          placeholder="기록 검색..."
           className="w-full rounded-2xl border-none bg-white px-6 py-4 shadow-sm outline-none ring-blue-500 focus:ring-2 transition-all"
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
         />
-        {searchTerm && (
-          <button
-            onClick={() => setSearchTerm("")}
-            className="absolute right-4 top-1/2 -translate-y-1/2 font-bold text-slate-300 hover:text-slate-500"
-          >
-            ✕
-          </button>
-        )}
       </div>
 
       {/* Note List */}
@@ -494,13 +453,13 @@ const HomePage = ({ user, notes, setNotes, handleLogout, API_URL }) => {
                 <div className="flex justify-end gap-3">
                   <button
                     onClick={() => setEditingId(null)}
-                    className="text-sm font-bold text-slate-400 hover:text-slate-600"
+                    className="text-sm font-bold text-slate-400"
                   >
                     취소
                   </button>
                   <button
                     onClick={() => updateNote(note.id)}
-                    className="rounded-xl bg-blue-600 px-6 py-2 text-sm font-bold text-white hover:bg-blue-700"
+                    className="rounded-xl bg-blue-600 px-6 py-2 text-sm font-bold text-white"
                   >
                     수정 완료
                   </button>
@@ -513,10 +472,7 @@ const HomePage = ({ user, notes, setNotes, handleLogout, API_URL }) => {
                     <img
                       src={`${API_URL}${note.image_url}`}
                       alt="note"
-                      className="max-h-96 w-full object-cover shadow-sm transition-transform group-hover:scale-105"
-                      onError={(e) => {
-                        e.target.style.display = "none";
-                      }}
+                      className="max-h-96 w-full object-cover transition-transform group-hover:scale-105"
                     />
                   </div>
                 )}
@@ -550,10 +506,8 @@ const HomePage = ({ user, notes, setNotes, handleLogout, API_URL }) => {
           </div>
         ))}
         {filteredNotes.length === 0 && (
-          <div className="py-20 text-center italic text-slate-300 font-medium">
-            {notes.length === 0
-              ? "남겨진 비밀이 없습니다."
-              : `"${searchTerm}"에 대한 검색 결과가 없습니다.`}
+          <div className="py-20 text-center italic text-slate-200">
+            남겨진 비밀이 없습니다.
           </div>
         )}
       </div>
