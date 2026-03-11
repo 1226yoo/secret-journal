@@ -6,6 +6,7 @@ import {
   Plus,
   Image as ImageIcon,
   Trash2,
+  Edit3,
   LogOut,
   CheckCircle,
   AlertCircle,
@@ -16,10 +17,11 @@ import {
 } from "lucide-react";
 
 /**
- * [OPTIMIZED ULTIMATE VERSION]
- * 1. Performance: Zustand Selector 패턴 적용 (불필요한 리렌더링 방지)
- * 2. Stability: import.meta 안전 접근 로직 유지
- * 3. UX: 스켈레톤 UI 및 검색어 하이라이팅 기능 포함
+ * [STEP 3-1: Full State Master]
+ * 1. 아키텍처: 모든 CRUD 로직을 Zustand Store로 이동 (컴포넌트 경량화)
+ * 2. 기능: 인라인 수정(Inline Editing) 기능 추가
+ * 3. 성능: 최적화된 Selector 패턴과 하이라이팅 기능 유지
+ * 4. UX: 스켈레톤 UI와 커스텀 모달 시스템 통합
  */
 
 // --- API URL 설정 (환경 변수 안전 접근) ---
@@ -27,33 +29,113 @@ const getApiUrl = () => {
   let url = "http://localhost:5000";
   try {
     const metaEnv = typeof import.meta !== "undefined" ? import.meta.env : null;
-    if (metaEnv && metaEnv.VITE_API_URL) {
-      url = metaEnv.VITE_API_URL;
-    }
-  } catch (e) {
-    console.warn("환경 변수 로드 중 경고가 발생했습니다.");
-  }
+    if (metaEnv && metaEnv.VITE_API_URL) url = metaEnv.VITE_API_URL;
+  } catch (e) {}
   return url.replace(/\/$/, "");
 };
-
 const API_URL = getApiUrl();
 
-// --- [Zustand Store] 중앙 데이터 창고 ---
-const useStore = create((set) => ({
+// --- [Zustand Store] 중앙 데이터 및 로직 창고 ---
+const useStore = create((set, get) => ({
+  // 상태(State)
   user: null,
-  setUser: (user) => set({ user }),
+  notes: [],
+  isNotesLoading: false,
   toast: null,
+  modal: null,
+
+  // 인증 액션(Auth Actions)
+  setUser: (user) => set({ user }),
+
+  // 노트 액션(Note CRUD Actions)
+  fetchNotes: async () => {
+    set({ isNotesLoading: true });
+    try {
+      const res = await fetch(`${API_URL}/api/notes`, {
+        credentials: "include",
+      });
+      if (res.ok) set({ notes: await res.json() });
+    } catch (err) {
+      console.error("노트 로딩 실패:", err);
+    } finally {
+      set({ isNotesLoading: false });
+    }
+  },
+
+  addNote: async (content, imageFile) => {
+    const formData = new FormData();
+    formData.append("content", content);
+    if (imageFile) formData.append("image", imageFile);
+
+    try {
+      const res = await fetch(`${API_URL}/api/notes`, {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      });
+      if (res.ok) {
+        const saved = await res.json();
+        set((state) => ({ notes: [saved, ...state.notes] }));
+        get().showToast("기록이 보관함에 저장되었습니다.");
+        return true;
+      }
+    } catch (err) {
+      get().showToast("저장 중 오류가 발생했습니다.", "error");
+    }
+    return false;
+  },
+
+  updateNote: async (id, newContent) => {
+    try {
+      const res = await fetch(`${API_URL}/api/notes/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ content: newContent }),
+      });
+      if (res.ok) {
+        set((state) => ({
+          notes: state.notes.map((n) =>
+            n.id === id ? { ...n, content: newContent } : n,
+          ),
+        }));
+        get().showToast("기록이 수정되었습니다.");
+        return true;
+      }
+    } catch (err) {
+      get().showToast("수정 중 오류가 발생했습니다.", "error");
+    }
+    return false;
+  },
+
+  deleteNote: async (id) => {
+    try {
+      const res = await fetch(`${API_URL}/api/notes/${id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (res.ok) {
+        set((state) => ({ notes: state.notes.filter((n) => n.id !== id) }));
+        get().showToast("기록이 삭제되었습니다.");
+        return true;
+      }
+    } catch (err) {
+      get().showToast("삭제 중 오류가 발생했습니다.", "error");
+    }
+    return false;
+  },
+
+  // UI 액션(UI Actions)
   showToast: (message, type = "success") => {
     set({ toast: { message, type } });
     setTimeout(() => set({ toast: null }), 3000);
   },
   hideToast: () => set({ toast: null }),
-  modal: null,
   openModal: (config) => set({ modal: config }),
   closeModal: () => set({ modal: null }),
 }));
 
-// --- [Helper Component] 검색어 하이라이트 ---
+// --- [UI Helpers] ---
 const HighlightText = ({ text, highlight }) => {
   if (!highlight.trim()) return <span>{text}</span>;
   const regex = new RegExp(`(${highlight})`, "gi");
@@ -76,8 +158,6 @@ const HighlightText = ({ text, highlight }) => {
   );
 };
 
-// --- [Reusable UI Components] ---
-
 const SkeletonNote = () => (
   <div className="rounded-[2.5rem] bg-white p-10 shadow-sm animate-pulse">
     <div className="mb-6 h-48 w-full rounded-3xl bg-slate-100" />
@@ -85,18 +165,12 @@ const SkeletonNote = () => (
       <div className="h-6 w-3/4 rounded-lg bg-slate-100" />
       <div className="h-6 w-1/2 rounded-lg bg-slate-100" />
     </div>
-    <div className="mt-8 flex justify-between border-t border-slate-50 pt-6">
-      <div className="h-3 w-20 rounded-lg bg-slate-50" />
-      <div className="h-3 w-10 rounded-lg bg-slate-50" />
-    </div>
   </div>
 );
 
 const Toast = () => {
-  // Selector 패턴 적용: toast와 hideToast만 구독
-  const toast = useStore((state) => state.toast);
-  const hideToast = useStore((state) => state.hideToast);
-
+  const toast = useStore((s) => s.toast);
+  const hideToast = useStore((s) => s.hideToast);
   if (!toast) return null;
   return (
     <div
@@ -117,10 +191,8 @@ const Toast = () => {
 };
 
 const Modal = () => {
-  // Selector 패턴 적용: modal과 closeModal만 구독
-  const modal = useStore((state) => state.modal);
-  const closeModal = useStore((state) => state.closeModal);
-
+  const modal = useStore((s) => s.modal);
+  const closeModal = useStore((s) => s.closeModal);
   if (!modal) return null;
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
@@ -157,18 +229,15 @@ const Modal = () => {
 };
 
 // --- [Main Application] ---
-
 const App = () => {
   const [view, setView] = useState("login");
-  const [notes, setNotes] = useState([]);
-  const [isInitialLoading, setIsInitialLoading] = useState(true);
-  const [isNotesLoading, setIsNotesLoading] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
 
-  // Selector 패턴 적용
-  const setUser = useStore((state) => state.setUser);
+  const setUser = useStore((s) => s.setUser);
+  const fetchNotes = useStore((s) => s.fetchNotes);
 
   useEffect(() => {
-    const checkLoginStatus = async () => {
+    const checkAuth = async () => {
       try {
         const res = await fetch(`${API_URL}/api/me`, {
           credentials: "include",
@@ -179,67 +248,42 @@ const App = () => {
           setView("home");
           fetchNotes();
         }
-      } catch (err) {
+      } catch (e) {
         console.error("인증 확인 실패");
       } finally {
-        setIsInitialLoading(false);
+        setInitialLoading(false);
       }
     };
-    checkLoginStatus();
-  }, [setUser]);
+    checkAuth();
+  }, [setUser, fetchNotes]);
 
-  const fetchNotes = async () => {
-    setIsNotesLoading(true);
-    try {
-      const res = await fetch(`${API_URL}/api/notes`, {
-        credentials: "include",
-      });
-      if (res.ok) setNotes(await res.json());
-    } catch (err) {
-    } finally {
-      setIsNotesLoading(false);
-    }
-  };
-
-  if (isInitialLoading)
+  if (initialLoading)
     return (
-      <div className="flex h-screen flex-col items-center justify-center bg-white">
-        <Loader2 className="h-10 w-10 animate-spin text-blue-600" />
-        <p className="mt-4 font-bold text-slate-400 uppercase tracking-widest text-xs">
-          Authenticating...
-        </p>
+      <div className="flex h-screen flex-col items-center justify-center bg-white text-blue-600">
+        <Loader2 className="h-10 w-10 animate-spin" />
       </div>
     );
 
   return (
-    <div className="min-h-screen bg-slate-50 selection:bg-blue-100 font-sans">
+    <div className="min-h-screen bg-slate-50 font-sans selection:bg-blue-100">
       <Toast />
       <Modal />
-      {view === "login" && (
-        <LoginPage setView={setView} fetchNotes={fetchNotes} />
-      )}
+      {view === "login" && <LoginPage setView={setView} />}
       {view === "signup" && <SignupPage setView={setView} />}
-      {view === "home" && (
-        <HomePage
-          notes={notes}
-          setNotes={setNotes}
-          setView={setView}
-          isNotesLoading={isNotesLoading}
-        />
-      )}
+      {view === "home" && <HomePage setView={setView} />}
     </div>
   );
 };
 
 // --- [Pages] ---
 
-const LoginPage = ({ setView, fetchNotes }) => {
+const LoginPage = ({ setView }) => {
   const [id, setId] = useState("");
   const [pw, setPw] = useState("");
 
-  // Selector 패턴 적용
-  const setUser = useStore((state) => state.setUser);
-  const showToast = useStore((state) => state.showToast);
+  const setUser = useStore((s) => s.setUser);
+  const fetchNotes = useStore((s) => s.fetchNotes);
+  const showToast = useStore((s) => s.showToast);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -254,8 +298,10 @@ const LoginPage = ({ setView, fetchNotes }) => {
         setUser({ username: id });
         setView("home");
         fetchNotes();
-        showToast(`${id}님, 환영합니다.`);
-      } else showToast("아이디 또는 비밀번호를 확인하세요.", "error");
+        showToast(`${id}님, 접속을 승인합니다.`);
+      } else {
+        showToast("아이디 또는 비밀번호를 확인하세요.", "error");
+      }
     } catch (err) {
       showToast("서버 연결 실패", "error");
     }
@@ -263,16 +309,14 @@ const LoginPage = ({ setView, fetchNotes }) => {
 
   return (
     <div className="flex h-screen items-center justify-center px-4">
-      <div className="w-full max-w-sm rounded-[2.5rem] bg-white p-10 shadow-2xl ring-1 ring-slate-100">
-        <div className="mb-10 text-center">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
-            <Lock size={32} />
-          </div>
-          <h1 className="text-3xl font-black italic tracking-tighter text-slate-800">
-            VAULT
-          </h1>
+      <div className="w-full max-w-sm rounded-[2.5rem] bg-white p-10 shadow-2xl ring-1 ring-slate-100 text-center">
+        <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
+          <Lock size={32} />
         </div>
-        <form onSubmit={handleLogin} className="space-y-4">
+        <h1 className="text-3xl font-black italic tracking-tighter text-slate-800 mb-10">
+          VAULT
+        </h1>
+        <form onSubmit={handleLogin} className="space-y-4 text-left">
           <input
             type="text"
             className="w-full rounded-2xl bg-slate-50 p-4 outline-none focus:ring-2 focus:ring-blue-500 transition-all"
@@ -295,9 +339,9 @@ const LoginPage = ({ setView, fetchNotes }) => {
         </form>
         <button
           onClick={() => setView("signup")}
-          className="mt-8 w-full text-center text-sm font-bold text-slate-300 hover:text-blue-500 transition-colors"
+          className="mt-8 text-sm font-bold text-slate-300 hover:text-blue-500 transition-colors"
         >
-          새로운 계정 생성
+          계정 생성
         </button>
       </div>
     </div>
@@ -307,35 +351,38 @@ const LoginPage = ({ setView, fetchNotes }) => {
 const SignupPage = ({ setView }) => {
   const [id, setId] = useState("");
   const [pw, setPw] = useState("");
-
-  // Selector 패턴 적용
-  const showToast = useStore((state) => state.showToast);
+  const showToast = useStore((s) => s.showToast);
 
   const handleSignup = async (e) => {
     e.preventDefault();
-    const res = await fetch(`${API_URL}/api/signup`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: id, password: pw }),
-    });
-    if (res.ok) {
-      showToast("가입 완료! 로그인을 진행하세요.");
-      setView("login");
-    } else showToast("이미 존재하는 아이디입니다.", "error");
+    try {
+      const res = await fetch(`${API_URL}/api/signup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: id, password: pw }),
+      });
+      if (res.ok) {
+        showToast("회원가입 완료! 이제 로그인하세요.");
+        setView("login");
+      } else {
+        const data = await res.json();
+        showToast(data.message || "가입 실패", "error");
+      }
+    } catch (err) {
+      showToast("서버 연결 실패", "error");
+    }
   };
 
   return (
     <div className="flex h-screen items-center justify-center px-4">
-      <div className="w-full max-w-sm rounded-[2.5rem] bg-white p-10 shadow-2xl ring-1 ring-slate-100">
-        <div className="mb-10 text-center">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-900 text-white">
-            <Plus size={32} />
-          </div>
-          <h1 className="text-3xl font-black italic tracking-tighter text-slate-800">
-            JOIN
-          </h1>
+      <div className="w-full max-w-sm rounded-[2.5rem] bg-white p-10 shadow-2xl ring-1 ring-slate-100 text-center">
+        <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-900 text-white">
+          <Plus size={32} />
         </div>
-        <form onSubmit={handleSignup} className="space-y-4">
+        <h1 className="text-3xl font-black italic tracking-tighter text-slate-800 mb-10">
+          JOIN
+        </h1>
+        <form onSubmit={handleSignup} className="space-y-4 text-left">
           <input
             type="text"
             className="w-full rounded-2xl bg-slate-50 p-4 outline-none focus:ring-2 focus:ring-blue-500 transition-all"
@@ -358,7 +405,7 @@ const SignupPage = ({ setView }) => {
         </form>
         <button
           onClick={() => setView("login")}
-          className="mt-8 w-full text-center text-sm font-bold text-slate-300 hover:text-slate-500 transition-colors"
+          className="mt-8 text-sm font-bold text-slate-300 hover:text-slate-500 transition-colors"
         >
           돌아가기
         </button>
@@ -367,17 +414,25 @@ const SignupPage = ({ setView }) => {
   );
 };
 
-const HomePage = ({ notes, setNotes, setView, isNotesLoading }) => {
-  const [newNote, setNewNote] = useState("");
+const HomePage = ({ setView }) => {
+  // Local State (UI 관련)
+  const [newContent, setNewContent] = useState("");
   const [image, setImage] = useState(null);
   const [preview, setPreview] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editingText, setEditingText] = useState("");
 
-  // Selector 패턴 적용
-  const user = useStore((state) => state.user);
-  const setUser = useStore((state) => state.setUser);
-  const showToast = useStore((state) => state.showToast);
-  const openModal = useStore((state) => state.openModal);
+  // Store Selectors (로직 관련)
+  const user = useStore((s) => s.user);
+  const setUser = useStore((s) => s.setUser);
+  const notes = useStore((s) => s.notes);
+  const isNotesLoading = useStore((s) => s.isNotesLoading);
+  const addNote = useStore((s) => s.addNote);
+  const deleteNote = useStore((s) => s.deleteNote);
+  const updateNote = useStore((s) => s.updateNote);
+  const openModal = useStore((s) => s.openModal);
+  const showToast = useStore((s) => s.showToast);
 
   const handleLogout = async () => {
     await fetch(`${API_URL}/api/logout`, {
@@ -385,47 +440,24 @@ const HomePage = ({ notes, setNotes, setView, isNotesLoading }) => {
       credentials: "include",
     });
     setUser(null);
-    setNotes([]);
     setView("login");
     showToast("로그아웃 되었습니다.");
   };
 
-  const addNote = async (e) => {
+  const handleAddNote = async (e) => {
     e.preventDefault();
-    if (!newNote.trim() && !image) return;
-    const formData = new FormData();
-    formData.append("content", newNote);
-    if (image) formData.append("image", image);
-    const res = await fetch(`${API_URL}/api/notes`, {
-      method: "POST",
-      credentials: "include",
-      body: formData,
-    });
-    if (res.ok) {
-      const saved = await res.json();
-      setNotes([saved, ...notes]);
-      setNewNote("");
+    const success = await addNote(newContent, image);
+    if (success) {
+      setNewContent("");
       setImage(null);
       setPreview(null);
-      showToast("기록이 보관함에 저장되었습니다.");
     }
   };
 
-  const deleteNote = (id) => {
-    openModal({
-      title: "기록 삭제",
-      message: "이 비밀 기록을 영구히 삭제하시겠습니까?",
-      onConfirm: async () => {
-        const res = await fetch(`${API_URL}/api/notes/${id}`, {
-          method: "DELETE",
-          credentials: "include",
-        });
-        if (res.ok) {
-          setNotes(notes.filter((n) => n.id !== id));
-          showToast("기록이 삭제되었습니다.");
-        }
-      },
-    });
+  const handleUpdate = async (id) => {
+    if (!editingText.trim()) return;
+    const success = await updateNote(id, editingText);
+    if (success) setEditingId(null);
   };
 
   const filteredNotes = useMemo(
@@ -444,7 +476,7 @@ const HomePage = ({ notes, setNotes, setView, isNotesLoading }) => {
             {user?.username}'s Vault.
           </h1>
           <p className="mt-1 font-medium text-slate-400">
-            당신만의 소중한 기록 {notes.length}개를 보관 중입니다.
+            당신만의 {notes.length}개의 비밀 기록들
           </p>
         </div>
         <button
@@ -455,15 +487,15 @@ const HomePage = ({ notes, setNotes, setView, isNotesLoading }) => {
         </button>
       </header>
 
-      {/* Write Section */}
-      <form onSubmit={addNote} className="mb-12">
+      {/* 작성 섹션 */}
+      <form onSubmit={handleAddNote} className="mb-12">
         <div className="overflow-hidden rounded-[2rem] bg-white shadow-sm ring-1 ring-slate-200 focus-within:ring-2 focus-within:ring-blue-500 focus-within:shadow-xl transition-all">
           <textarea
             className="w-full resize-none border-none bg-transparent p-8 text-xl outline-none placeholder:text-slate-300"
             rows="3"
-            placeholder="기밀 사항을 입력하세요..."
-            value={newNote}
-            onChange={(e) => setNewNote(e.target.value)}
+            placeholder="기록하고 싶은 비밀이 있나요?"
+            value={newContent}
+            onChange={(e) => setNewContent(e.target.value)}
           />
           {preview && (
             <div className="flex items-center gap-4 px-8 pb-6">
@@ -478,9 +510,9 @@ const HomePage = ({ notes, setNotes, setView, isNotesLoading }) => {
                   setImage(null);
                   setPreview(null);
                 }}
-                className="text-xs font-bold text-red-400"
+                className="text-xs font-bold text-red-400 hover:underline"
               >
-                삭제
+                사진 삭제
               </button>
             </div>
           )}
@@ -508,7 +540,7 @@ const HomePage = ({ notes, setNotes, setView, isNotesLoading }) => {
         </div>
       </form>
 
-      {/* Search Bar */}
+      {/* 검색 바 */}
       <div className="mb-10 relative">
         <input
           type="text"
@@ -523,7 +555,7 @@ const HomePage = ({ notes, setNotes, setView, isNotesLoading }) => {
         />
       </div>
 
-      {/* List */}
+      {/* 리스트 섹션 */}
       <div className="space-y-8">
         {isNotesLoading ? (
           <>
@@ -545,20 +577,65 @@ const HomePage = ({ notes, setNotes, setView, isNotesLoading }) => {
                   />
                 </div>
               )}
-              <p className="text-2xl font-medium leading-relaxed text-slate-700">
-                <HighlightText text={note.content} highlight={searchTerm} />
-              </p>
-              <div className="mt-8 flex items-center justify-between border-t border-slate-50 pt-6">
-                <time className="text-[10px] font-black uppercase tracking-widest text-slate-300">
-                  {note.date}
-                </time>
-                <button
-                  onClick={() => deleteNote(note.id)}
-                  className="flex items-center gap-1 text-xs font-bold text-red-200 opacity-0 group-hover:opacity-100 hover:text-red-500 transition-all"
-                >
-                  <Trash2 size={14} /> Delete
-                </button>
-              </div>
+
+              {editingId === note.id ? (
+                <div className="space-y-4">
+                  <textarea
+                    className="w-full rounded-2xl bg-slate-50 p-6 text-xl outline-none ring-2 ring-blue-500"
+                    value={editingText}
+                    onChange={(e) => setEditingText(e.target.value)}
+                    autoFocus
+                  />
+                  <div className="flex justify-end gap-3">
+                    <button
+                      onClick={() => setEditingId(null)}
+                      className="text-sm font-bold text-slate-400"
+                    >
+                      취소
+                    </button>
+                    <button
+                      onClick={() => handleUpdate(note.id)}
+                      className="bg-blue-600 text-white px-6 py-2 rounded-xl font-bold shadow-lg"
+                    >
+                      수정 완료
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <p className="text-2xl font-medium leading-relaxed text-slate-700">
+                    <HighlightText text={note.content} highlight={searchTerm} />
+                  </p>
+                  <div className="mt-8 flex items-center justify-between border-t border-slate-50 pt-6">
+                    <time className="text-[10px] font-black uppercase tracking-widest text-slate-300">
+                      {note.date}
+                    </time>
+                    <div className="flex items-center gap-4 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => {
+                          setEditingId(note.id);
+                          setEditingText(note.content);
+                        }}
+                        className="text-blue-400 hover:text-blue-600 transition-colors"
+                      >
+                        <Edit3 size={16} />
+                      </button>
+                      <button
+                        onClick={() =>
+                          openModal({
+                            title: "기록 삭제",
+                            message: "이 비밀 기록을 영구히 삭제하시겠습니까?",
+                            onConfirm: () => deleteNote(note.id),
+                          })
+                        }
+                        className="text-red-200 hover:text-red-500 transition-colors"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           ))
         )}

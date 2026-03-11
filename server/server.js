@@ -20,38 +20,25 @@ const SESSION_SECRET = process.env.SESSION_SECRET || "your-fallback-secret";
 const DB_PATH = path.join(__dirname, process.env.DB_PATH || "journal.sqlite");
 const ORIGIN_URL = process.env.ORIGIN_URL || "http://localhost:5173";
 
-// [중요] Render와 같은 프록시 환경에서 HTTPS 쿠키를 전송하기 위한 설정
 app.set("trust proxy", 1);
 
 const uploadDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
 
 app.use(express.json());
-
-// 1. CORS 설정: 반드시 주소 끝에 /가 없어야 하며, credentials: true가 필수입니다.
-app.use(
-  cors({
-    origin: ORIGIN_URL,
-    credentials: true,
-    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-  }),
-);
-
+app.use(cors({ origin: ORIGIN_URL, credentials: true }));
 app.use("/uploads", express.static(uploadDir));
 
-// 2. 세션 설정 (배포 환경 최적화)
 app.use(
   session({
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
-    proxy: true, // 프록시 환경(Render) 인정
+    proxy: true,
     cookie: {
       maxAge: 60 * 60 * 1000,
-      // [핵심] 배포 환경(HTTPS)에서는 아래 두 설정이 필수입니다.
-      // 로컬 테스트 중이라면 secure: false로 잠시 바꿔야 할 수도 있습니다.
       secure: true,
-      sameSite: "none", // 서로 다른 도메인(subdomain) 간 쿠키 허용
+      sameSite: "none",
       httpOnly: true,
     },
   }),
@@ -72,7 +59,7 @@ const checkAuth = (req, res, next) => {
   else res.status(401).json({ message: "로그인이 필요합니다." });
 };
 
-// --- API 영역 (기존과 동일하되 에러 로그 강화) ---
+// --- AUTH API ---
 app.post("/api/signup", async (req, res) => {
   const { username, password } = req.body;
   const hashedPassword = await bcrypt.hash(password, 10);
@@ -97,12 +84,7 @@ app.post("/api/login", (req, res) => {
       const isMatch = await bcrypt.compare(password, user.password);
       if (isMatch) {
         req.session.user = { id: user.id, username: user.username };
-        // 세션 저장 후 응답을 보내는 것이 안전합니다.
-        req.session.save((saveErr) => {
-          if (saveErr)
-            return res.status(500).json({ message: "세션 저장 실패" });
-          res.json({ success: true });
-        });
+        req.session.save(() => res.json({ success: true }));
       } else res.status(401).json({ message: "비밀번호 불일치" });
     },
   );
@@ -115,12 +97,10 @@ app.get("/api/me", (req, res) => {
 });
 
 app.post("/api/logout", (req, res) => {
-  req.session.destroy(() => {
-    res.clearCookie("connect.sid"); // 쿠키 강제 삭제
-    res.json({ success: true });
-  });
+  req.session.destroy(() => res.json({ success: true }));
 });
 
+// --- CRUD API ---
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
@@ -147,9 +127,21 @@ app.post("/api/notes", checkAuth, upload.single("image"), (req, res) => {
   db.run(
     "INSERT INTO notes (user_id, content, image_url, date) VALUES (?, ?, ?, ?)",
     [req.session.user.id, content, imageUrl, date],
-    function (err) {
-      if (err) return res.status(500).json({ message: err.message });
+    function () {
       res.json({ id: this.lastID, content, image_url: imageUrl, date });
+    },
+  );
+});
+
+// [추가] 메모 수정 API (PATCH)
+app.patch("/api/notes/:id", checkAuth, (req, res) => {
+  const { content } = req.body;
+  db.run(
+    "UPDATE notes SET content = ? WHERE id = ? AND user_id = ?",
+    [content, req.params.id, req.session.user.id],
+    function (err) {
+      if (err) return res.status(500).json({ message: "수정 실패" });
+      res.json({ success: true });
     },
   );
 });
