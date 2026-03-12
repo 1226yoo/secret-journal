@@ -1,5 +1,5 @@
 import express from "express";
-import pg from "pg"; // 1. SQLite 대신 pg 라이브러리 사용
+import pg from "pg";
 import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -20,10 +20,12 @@ const PORT = process.env.PORT || 10000;
 const SESSION_SECRET = process.env.SESSION_SECRET || "your-secret";
 const ORIGIN_URL = process.env.ORIGIN_URL || "http://localhost:5173";
 
-// 2. Supabase 연결 통로(Pool) 설정
+// 2. Supabase 연결 통로(Pool) 설정 강화
+// 6543 포트(Transaction Mode)를 사용하는 것을 권장합니다.
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }, // 클라우드 DB 접속을 위한 필수 보안 설정
+  ssl: { rejectUnauthorized: false },
+  connectionTimeoutMillis: 10000, // 연결 시도 제한 시간 추가
 });
 
 app.set("trust proxy", 1);
@@ -50,9 +52,14 @@ app.use(
   }),
 );
 
-// 3. DB 테이블 초기화 로직 (Postgres 문법 적용)
+// 3. DB 테이블 초기화 로직 (에러 핸들링 강화)
 const initDB = async () => {
   try {
+    // 연결 테스트를 먼저 수행합니다.
+    const client = await pool.connect();
+    console.log("✅ Supabase 금고 본체 연결 성공!");
+    client.release();
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -69,9 +76,13 @@ const initDB = async () => {
         date TEXT
       );
     `);
-    console.log("📡 Supabase 금고 연결 완료!");
+    console.log("📡 모든 테이블 준비 완료!");
   } catch (err) {
-    console.error("금고 건설 실패:", err);
+    console.error("❌ 금고 건설 실패 (DB 연결 오류):");
+    console.error(`이유: ${err.message}`);
+    console.error(
+      "팁: Supabase 주소의 포트가 6543인지, 비밀번호가 맞는지 확인하세요.",
+    );
   }
 };
 initDB();
@@ -81,7 +92,7 @@ const checkAuth = (req, res, next) => {
   else res.status(401).json({ message: "로그인이 필요합니다." });
 };
 
-// --- [수정] 파일 업로드 기계(multer) 설정 ---
+// 파일 업로드 설정
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
