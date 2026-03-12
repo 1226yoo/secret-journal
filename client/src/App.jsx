@@ -14,17 +14,19 @@ import {
   Loader2,
   TriangleAlert,
   FileText,
+  Moon,
+  Sun,
+  Download,
 } from "lucide-react";
 
 /**
- * [STEP 3-1: Full State Master]
- * 1. 아키텍처: 모든 CRUD 로직을 Zustand Store로 이동 (컴포넌트 경량화)
- * 2. 기능: 인라인 수정(Inline Editing) 기능 추가
- * 3. 성능: 최적화된 Selector 패턴과 하이라이팅 기능 유지
- * 4. UX: 스켈레톤 UI와 커스텀 모달 시스템 통합
+ * [FINAL MASTER VERSION - STEP 3-3]
+ * 1. Performance: 검색 디바운싱(Debouncing)으로 필터링 최적화
+ * 2. Feature: 데이터 백업(JSON Export) 기능 추가
+ * 3. UI/UX: 다크 모드, 인라인 수정, 모바일 최적화 완비
  */
 
-// --- API URL 설정 (환경 변수 안전 접근) ---
+// --- API URL 설정 ---
 const getApiUrl = () => {
   let url = "http://localhost:5000";
   try {
@@ -35,28 +37,31 @@ const getApiUrl = () => {
 };
 const API_URL = getApiUrl();
 
-// --- [Zustand Store] 중앙 데이터 및 로직 창고 ---
+// --- [Zustand Store] ---
 const useStore = create((set, get) => ({
-  // 상태(State)
   user: null,
   notes: [],
   isNotesLoading: false,
+  isDarkMode: false,
   toast: null,
   modal: null,
 
-  // 인증 액션(Auth Actions)
   setUser: (user) => set({ user }),
+  toggleDarkMode: () => set((state) => ({ isDarkMode: !state.isDarkMode })),
 
-  // 노트 액션(Note CRUD Actions)
   fetchNotes: async () => {
     set({ isNotesLoading: true });
     try {
-      const res = await fetch(`${API_URL}/api/notes`, {
+      const res = await fetch(`${API_URL}/api/me`, { credentials: "include" });
+      const authData = await res.json();
+      if (!authData.isLoggedIn) return;
+
+      const notesRes = await fetch(`${API_URL}/api/notes`, {
         credentials: "include",
       });
-      if (res.ok) set({ notes: await res.json() });
+      if (notesRes.ok) set({ notes: await notesRes.json() });
     } catch (err) {
-      console.error("노트 로딩 실패:", err);
+      console.error("Failed to fetch");
     } finally {
       set({ isNotesLoading: false });
     }
@@ -76,11 +81,11 @@ const useStore = create((set, get) => ({
       if (res.ok) {
         const saved = await res.json();
         set((state) => ({ notes: [saved, ...state.notes] }));
-        get().showToast("기록이 보관함에 저장되었습니다.");
+        get().showToast("기록이 성공적으로 저장되었습니다.");
         return true;
       }
     } catch (err) {
-      get().showToast("저장 중 오류가 발생했습니다.", "error");
+      get().showToast("저장 실패", "error");
     }
     return false;
   },
@@ -99,11 +104,11 @@ const useStore = create((set, get) => ({
             n.id === id ? { ...n, content: newContent } : n,
           ),
         }));
-        get().showToast("기록이 수정되었습니다.");
+        get().showToast("수정 완료");
         return true;
       }
     } catch (err) {
-      get().showToast("수정 중 오류가 발생했습니다.", "error");
+      get().showToast("수정 실패", "error");
     }
     return false;
   },
@@ -116,16 +121,13 @@ const useStore = create((set, get) => ({
       });
       if (res.ok) {
         set((state) => ({ notes: state.notes.filter((n) => n.id !== id) }));
-        get().showToast("기록이 삭제되었습니다.");
-        return true;
+        get().showToast("삭제되었습니다.");
       }
     } catch (err) {
-      get().showToast("삭제 중 오류가 발생했습니다.", "error");
+      get().showToast("삭제 실패", "error");
     }
-    return false;
   },
 
-  // UI 액션(UI Actions)
   showToast: (message, type = "success") => {
     set({ toast: { message, type } });
     setTimeout(() => set({ toast: null }), 3000);
@@ -146,7 +148,7 @@ const HighlightText = ({ text, highlight }) => {
         regex.test(part) ? (
           <mark
             key={i}
-            className="bg-yellow-200 text-slate-900 rounded-sm px-0.5"
+            className="bg-blue-500/30 text-inherit rounded-sm px-0.5"
           >
             {part}
           </mark>
@@ -159,11 +161,11 @@ const HighlightText = ({ text, highlight }) => {
 };
 
 const SkeletonNote = () => (
-  <div className="rounded-[2.5rem] bg-white p-10 shadow-sm animate-pulse">
-    <div className="mb-6 h-48 w-full rounded-3xl bg-slate-100" />
+  <div className="rounded-[2rem] md:rounded-[2.5rem] bg-white dark:bg-slate-800 p-6 md:p-10 shadow-sm animate-pulse">
+    <div className="mb-6 h-48 w-full rounded-3xl bg-slate-100 dark:bg-slate-700" />
     <div className="space-y-3">
-      <div className="h-6 w-3/4 rounded-lg bg-slate-100" />
-      <div className="h-6 w-1/2 rounded-lg bg-slate-100" />
+      <div className="h-6 w-3/4 rounded-lg bg-slate-100 dark:bg-slate-700" />
+      <div className="h-6 w-1/2 rounded-lg bg-slate-100 dark:bg-slate-700" />
     </div>
   </div>
 );
@@ -174,8 +176,7 @@ const Toast = () => {
   if (!toast) return null;
   return (
     <div
-      className={`fixed bottom-10 left-1/2 z-[100] flex -translate-x-1/2 items-center gap-3 rounded-2xl px-6 py-4 shadow-2xl transition-all animate-in fade-in slide-in-from-bottom-4
-      ${toast.type === "success" ? "bg-slate-900 text-white" : "bg-red-500 text-white"}`}
+      className={`fixed bottom-10 left-1/2 z-[100] flex -translate-x-1/2 items-center gap-3 rounded-2xl px-6 py-4 shadow-2xl transition-all animate-in fade-in slide-in-from-bottom-4 ${toast.type === "success" ? "bg-slate-900 dark:bg-blue-600 text-white" : "bg-red-500 text-white"}`}
     >
       {toast.type === "success" ? (
         <CheckCircle size={18} />
@@ -196,20 +197,20 @@ const Modal = () => {
   if (!modal) return null;
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
-      <div className="w-full max-w-sm rounded-[2rem] bg-white p-8 shadow-2xl animate-in zoom-in-95 duration-200">
-        <div className="mb-6 flex h-14 w-14 items-center justify-center rounded-2xl bg-red-50 text-red-500">
+      <div className="w-full max-w-sm rounded-[2rem] bg-white dark:bg-slate-800 p-8 shadow-2xl animate-in zoom-in-95 duration-200">
+        <div className="mb-6 flex h-14 w-14 items-center justify-center rounded-2xl bg-red-50 dark:bg-red-900/20 text-red-500">
           <TriangleAlert size={28} />
         </div>
-        <h2 className="mb-2 text-xl font-black text-slate-800">
+        <h2 className="mb-2 text-xl font-black text-slate-800 dark:text-white">
           {modal.title}
         </h2>
-        <p className="mb-8 text-slate-500 leading-relaxed text-sm">
+        <p className="mb-8 text-slate-500 dark:text-slate-400 leading-relaxed text-sm">
           {modal.message}
         </p>
         <div className="flex gap-3">
           <button
             onClick={closeModal}
-            className="flex-1 rounded-2xl bg-slate-100 py-4 font-bold text-slate-400 hover:bg-slate-200 transition-colors"
+            className="flex-1 rounded-2xl bg-slate-100 dark:bg-slate-700 py-4 font-bold text-slate-400 dark:text-slate-300"
           >
             취소
           </button>
@@ -218,7 +219,7 @@ const Modal = () => {
               modal.onConfirm();
               closeModal();
             }}
-            className="flex-1 rounded-2xl bg-red-500 py-4 font-bold text-white shadow-lg shadow-red-100 hover:bg-red-600 transition-colors"
+            className="flex-1 rounded-2xl bg-red-500 py-4 font-bold text-white shadow-lg"
           >
             확인
           </button>
@@ -232,9 +233,9 @@ const Modal = () => {
 const App = () => {
   const [view, setView] = useState("login");
   const [initialLoading, setInitialLoading] = useState(true);
-
   const setUser = useStore((s) => s.setUser);
   const fetchNotes = useStore((s) => s.fetchNotes);
+  const isDarkMode = useStore((s) => s.isDarkMode);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -249,7 +250,6 @@ const App = () => {
           fetchNotes();
         }
       } catch (e) {
-        console.error("인증 확인 실패");
       } finally {
         setInitialLoading(false);
       }
@@ -259,18 +259,21 @@ const App = () => {
 
   if (initialLoading)
     return (
-      <div className="flex h-screen flex-col items-center justify-center bg-white text-blue-600">
-        <Loader2 className="h-10 w-10 animate-spin" />
+      <div className="flex h-screen flex-col items-center justify-center bg-white dark:bg-slate-900">
+        <Loader2 className="h-10 w-10 animate-spin text-blue-600" />
       </div>
     );
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans selection:bg-blue-100">
-      <Toast />
-      <Modal />
-      {view === "login" && <LoginPage setView={setView} />}
-      {view === "signup" && <SignupPage setView={setView} />}
-      {view === "home" && <HomePage setView={setView} />}
+    <div
+      className={`${isDarkMode ? "dark bg-slate-900" : "bg-slate-50"} min-h-screen font-sans selection:bg-blue-500 transition-colors duration-300`}
+    >
+      <div className="text-slate-900 dark:text-white">
+        <Toast /> <Modal />
+        {view === "login" && <LoginPage setView={setView} />}
+        {view === "signup" && <SignupPage setView={setView} />}
+        {view === "home" && <HomePage setView={setView} />}
+      </div>
     </div>
   );
 };
@@ -280,46 +283,44 @@ const App = () => {
 const LoginPage = ({ setView }) => {
   const [id, setId] = useState("");
   const [pw, setPw] = useState("");
-
-  const setUser = useStore((s) => s.setUser);
-  const fetchNotes = useStore((s) => s.fetchNotes);
-  const showToast = useStore((s) => s.showToast);
+  const { setUser, fetchNotes, showToast, isDarkMode, toggleDarkMode } =
+    useStore();
 
   const handleLogin = async (e) => {
     e.preventDefault();
-    try {
-      const res = await fetch(`${API_URL}/api/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ username: id, password: pw }),
-      });
-      if (res.ok) {
-        setUser({ username: id });
-        setView("home");
-        fetchNotes();
-        showToast(`${id}님, 접속을 승인합니다.`);
-      } else {
-        showToast("아이디 또는 비밀번호를 확인하세요.", "error");
-      }
-    } catch (err) {
-      showToast("서버 연결 실패", "error");
-    }
+    const res = await fetch(`${API_URL}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ username: id, password: pw }),
+    });
+    if (res.ok) {
+      setUser({ username: id });
+      setView("home");
+      fetchNotes();
+      showToast(`${id}님 환영합니다.`);
+    } else showToast("로그인 실패", "error");
   };
 
   return (
-    <div className="flex h-screen items-center justify-center px-4">
-      <div className="w-full max-w-sm rounded-[2.5rem] bg-white p-10 shadow-2xl ring-1 ring-slate-100 text-center">
-        <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
+    <div className="flex min-h-screen items-center justify-center px-4">
+      <div className="w-full max-w-sm rounded-[2.5rem] bg-white dark:bg-slate-800 p-8 md:p-10 shadow-2xl relative animate-in fade-in zoom-in duration-300">
+        <button
+          onClick={toggleDarkMode}
+          className="absolute right-8 top-8 text-slate-300 hover:text-blue-500"
+        >
+          {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
+        </button>
+        <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-50 dark:bg-blue-900/20 text-blue-600">
           <Lock size={32} />
         </div>
-        <h1 className="text-3xl font-black italic tracking-tighter text-slate-800 mb-10">
+        <h1 className="text-3xl font-black italic tracking-tighter mb-10 text-center">
           VAULT
         </h1>
-        <form onSubmit={handleLogin} className="space-y-4 text-left">
+        <form onSubmit={handleLogin} className="space-y-4">
           <input
             type="text"
-            className="w-full rounded-2xl bg-slate-50 p-4 outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            className="w-full rounded-2xl bg-slate-50 dark:bg-slate-900 p-4 outline-none focus:ring-2 focus:ring-blue-500 dark:text-white transition-all"
             placeholder="ID"
             value={id}
             onChange={(e) => setId(e.target.value)}
@@ -327,7 +328,7 @@ const LoginPage = ({ setView }) => {
           />
           <input
             type="password"
-            className="w-full rounded-2xl bg-slate-50 p-4 outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            className="w-full rounded-2xl bg-slate-50 dark:bg-slate-900 p-4 outline-none focus:ring-2 focus:ring-blue-500 dark:text-white transition-all"
             placeholder="Password"
             value={pw}
             onChange={(e) => setPw(e.target.value)}
@@ -339,7 +340,7 @@ const LoginPage = ({ setView }) => {
         </form>
         <button
           onClick={() => setView("signup")}
-          className="mt-8 text-sm font-bold text-slate-300 hover:text-blue-500 transition-colors"
+          className="mt-8 text-sm font-bold text-slate-300 hover:text-blue-500 w-full"
         >
           계정 생성
         </button>
@@ -355,37 +356,30 @@ const SignupPage = ({ setView }) => {
 
   const handleSignup = async (e) => {
     e.preventDefault();
-    try {
-      const res = await fetch(`${API_URL}/api/signup`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: id, password: pw }),
-      });
-      if (res.ok) {
-        showToast("회원가입 완료! 이제 로그인하세요.");
-        setView("login");
-      } else {
-        const data = await res.json();
-        showToast(data.message || "가입 실패", "error");
-      }
-    } catch (err) {
-      showToast("서버 연결 실패", "error");
-    }
+    const res = await fetch(`${API_URL}/api/signup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: id, password: pw }),
+    });
+    if (res.ok) {
+      showToast("가입 성공!");
+      setView("login");
+    } else showToast("가입 실패", "error");
   };
 
   return (
-    <div className="flex h-screen items-center justify-center px-4">
-      <div className="w-full max-w-sm rounded-[2.5rem] bg-white p-10 shadow-2xl ring-1 ring-slate-100 text-center">
+    <div className="flex min-h-screen items-center justify-center px-4">
+      <div className="w-full max-w-sm rounded-[2.5rem] bg-white dark:bg-slate-800 p-8 md:p-10 shadow-2xl animate-in fade-in zoom-in duration-300">
         <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-900 text-white">
           <Plus size={32} />
         </div>
-        <h1 className="text-3xl font-black italic tracking-tighter text-slate-800 mb-10">
-          JOIN
+        <h1 className="text-3xl font-black italic tracking-tighter mb-10 text-center uppercase">
+          Join
         </h1>
-        <form onSubmit={handleSignup} className="space-y-4 text-left">
+        <form onSubmit={handleSignup} className="space-y-4">
           <input
             type="text"
-            className="w-full rounded-2xl bg-slate-50 p-4 outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            className="w-full rounded-2xl bg-slate-50 dark:bg-slate-900 p-4 outline-none dark:text-white"
             placeholder="New ID"
             value={id}
             onChange={(e) => setId(e.target.value)}
@@ -393,19 +387,19 @@ const SignupPage = ({ setView }) => {
           />
           <input
             type="password"
-            className="w-full rounded-2xl bg-slate-50 p-4 outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            className="w-full rounded-2xl bg-slate-50 dark:bg-slate-900 p-4 outline-none dark:text-white"
             placeholder="New Password"
             value={pw}
             onChange={(e) => setPw(e.target.value)}
             required
           />
-          <button className="w-full rounded-2xl bg-slate-900 py-4 font-bold text-white active:scale-95 transition-all">
+          <button className="w-full rounded-2xl bg-slate-900 dark:bg-blue-600 py-4 font-bold text-white active:scale-95 transition-all">
             Create Account
           </button>
         </form>
         <button
           onClick={() => setView("login")}
-          className="mt-8 text-sm font-bold text-slate-300 hover:text-slate-500 transition-colors"
+          className="mt-8 text-sm font-bold text-slate-300 w-full"
         >
           돌아가기
         </button>
@@ -415,24 +409,36 @@ const SignupPage = ({ setView }) => {
 };
 
 const HomePage = ({ setView }) => {
-  // Local State (UI 관련)
   const [newContent, setNewContent] = useState("");
   const [image, setImage] = useState(null);
   const [preview, setPreview] = useState(null);
-  const [searchTerm, setSearchTerm] = useState("");
+
+  // (A) 검색 최적화 상태: 타이핑용과 실제 필터링용 분리
+  const [displaySearch, setDisplaySearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
   const [editingId, setEditingId] = useState(null);
   const [editingText, setEditingText] = useState("");
 
-  // Store Selectors (로직 관련)
-  const user = useStore((s) => s.user);
-  const setUser = useStore((s) => s.setUser);
-  const notes = useStore((s) => s.notes);
-  const isNotesLoading = useStore((s) => s.isNotesLoading);
-  const addNote = useStore((s) => s.addNote);
-  const deleteNote = useStore((s) => s.deleteNote);
-  const updateNote = useStore((s) => s.updateNote);
-  const openModal = useStore((s) => s.openModal);
-  const showToast = useStore((s) => s.showToast);
+  const {
+    user,
+    setUser,
+    notes,
+    isNotesLoading,
+    addNote,
+    deleteNote,
+    updateNote,
+    openModal,
+    showToast,
+    isDarkMode,
+    toggleDarkMode,
+  } = useStore();
+
+  // (C) 디바운싱 로직: 입력 후 300ms 뒤에 필터링 실행
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(displaySearch), 300);
+    return () => clearTimeout(timer);
+  }, [displaySearch]);
 
   const handleLogout = async () => {
     await fetch(`${API_URL}/api/logout`, {
@@ -441,7 +447,19 @@ const HomePage = ({ setView }) => {
     });
     setUser(null);
     setView("login");
-    showToast("로그아웃 되었습니다.");
+    showToast("로그아웃되었습니다.");
+  };
+
+  // (E) 데이터 백업 로직
+  const exportData = () => {
+    const dataStr = JSON.stringify(notes, null, 2);
+    const blob = new Blob([dataStr], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `vault_backup_${new Date().toISOString().split("T")[0]}.json`;
+    link.click();
+    showToast("백업 파일이 생성되었습니다.");
   };
 
   const handleAddNote = async (e) => {
@@ -454,109 +472,114 @@ const HomePage = ({ setView }) => {
     }
   };
 
-  const handleUpdate = async (id) => {
-    if (!editingText.trim()) return;
-    const success = await updateNote(id, editingText);
-    if (success) setEditingId(null);
-  };
-
   const filteredNotes = useMemo(
     () =>
       notes.filter((n) =>
-        n.content.toLowerCase().includes(searchTerm.toLowerCase()),
+        n.content.toLowerCase().includes(debouncedSearch.toLowerCase()),
       ),
-    [notes, searchTerm],
+    [notes, debouncedSearch],
   );
 
   return (
-    <div className="mx-auto max-w-2xl px-6 py-16">
-      <header className="mb-16 flex items-end justify-between">
+    <div className="mx-auto max-w-2xl px-4 md:px-6 py-12 md:py-16">
+      <header className="mb-12 flex items-start justify-between">
         <div>
-          <h1 className="text-4xl font-black italic tracking-tighter text-slate-900">
+          <h1 className="text-3xl md:text-4xl font-black italic tracking-tighter">
             {user?.username}'s Vault.
           </h1>
-          <p className="mt-1 font-medium text-slate-400">
-            당신만의 {notes.length}개의 비밀 기록들
+          <p className="mt-1 font-medium text-slate-400 text-sm">
+            {notes.length}개의 기록 보관 중
           </p>
         </div>
-        <button
-          onClick={handleLogout}
-          className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-slate-300 hover:text-red-400 transition-colors"
-        >
-          <LogOut size={14} /> Logout
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={exportData}
+            title="백업하기"
+            className="text-slate-300 hover:text-green-500 p-2"
+          >
+            <Download size={20} />
+          </button>
+          <button
+            onClick={toggleDarkMode}
+            className="text-slate-300 hover:text-blue-500 p-2"
+          >
+            {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
+          </button>
+          <button
+            onClick={handleLogout}
+            className="text-[10px] font-black uppercase border border-slate-200 dark:border-slate-700 rounded-full px-3 py-1.5 hover:text-red-400 transition-colors"
+          >
+            Logout
+          </button>
+        </div>
       </header>
 
-      {/* 작성 섹션 */}
-      <form onSubmit={handleAddNote} className="mb-12">
-        <div className="overflow-hidden rounded-[2rem] bg-white shadow-sm ring-1 ring-slate-200 focus-within:ring-2 focus-within:ring-blue-500 focus-within:shadow-xl transition-all">
-          <textarea
-            className="w-full resize-none border-none bg-transparent p-8 text-xl outline-none placeholder:text-slate-300"
-            rows="3"
-            placeholder="기록하고 싶은 비밀이 있나요?"
-            value={newContent}
-            onChange={(e) => setNewContent(e.target.value)}
-          />
-          {preview && (
-            <div className="flex items-center gap-4 px-8 pb-6">
-              <img
-                src={preview}
-                alt="preview"
-                className="h-24 w-24 rounded-2xl object-cover shadow-lg ring-4 ring-slate-50"
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  setImage(null);
-                  setPreview(null);
-                }}
-                className="text-xs font-bold text-red-400 hover:underline"
-              >
-                사진 삭제
-              </button>
-            </div>
-          )}
-          <div className="flex items-center justify-between bg-slate-50/50 p-4 px-8 border-t border-slate-100">
-            <label className="flex cursor-pointer items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold text-slate-400 hover:bg-slate-100 transition-colors">
-              <ImageIcon size={18} />
-              <span>이미지</span>
-              <input
-                type="file"
-                className="hidden"
-                accept="image/*"
-                onChange={(e) => {
-                  const file = e.target.files[0];
-                  if (file) {
-                    setImage(file);
-                    setPreview(URL.createObjectURL(file));
-                  }
-                }}
-              />
-            </label>
-            <button className="flex items-center gap-2 rounded-2xl bg-slate-900 px-8 py-3 font-bold text-white shadow-lg active:scale-95 transition-all">
-              <Plus size={18} /> Save Secret
+      <form
+        onSubmit={handleAddNote}
+        className="mb-12 overflow-hidden rounded-[2rem] bg-white dark:bg-slate-800 shadow-xl ring-1 ring-slate-200 dark:ring-slate-700 focus-within:ring-2 focus-within:ring-blue-500 transition-all"
+      >
+        <textarea
+          className="w-full resize-none border-none bg-transparent p-6 md:p-8 text-lg outline-none dark:text-white"
+          rows="3"
+          placeholder="기록하고 싶은 비밀이 있나요?"
+          value={newContent}
+          onChange={(e) => setNewContent(e.target.value)}
+        />
+        {preview && (
+          <div className="px-6 md:px-8 pb-5 flex items-center gap-4 animate-in fade-in">
+            <img
+              src={preview}
+              className="h-20 w-20 rounded-2xl object-cover ring-2 ring-slate-100 dark:ring-slate-700"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                setImage(null);
+                setPreview(null);
+              }}
+              className="text-xs font-bold text-red-400"
+            >
+              삭제
             </button>
           </div>
+        )}
+        <div className="flex items-center justify-between bg-slate-50/50 dark:bg-slate-900/50 p-4 px-6 md:px-8 border-t border-slate-100 dark:border-slate-700">
+          <label className="cursor-pointer text-slate-400 hover:text-blue-500">
+            <ImageIcon size={22} />
+            <input
+              type="file"
+              className="hidden"
+              accept="image/*"
+              onChange={(e) => {
+                const f = e.target.files[0];
+                if (f) {
+                  setImage(f);
+                  setPreview(URL.createObjectURL(f));
+                }
+              }}
+            />
+          </label>
+          <button className="bg-slate-900 dark:bg-blue-600 text-white px-6 md:px-8 py-2.5 rounded-2xl font-bold active:scale-95 transition-all text-sm">
+            Save Secret
+          </button>
         </div>
       </form>
 
-      {/* 검색 바 */}
-      <div className="mb-10 relative">
+      <div className="mb-10 relative group">
         <input
           type="text"
-          placeholder="기록 검색..."
-          className="w-full rounded-2xl border-none bg-white px-6 py-4 pl-14 shadow-sm outline-none ring-blue-500 focus:ring-2 transition-all"
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
+          placeholder="검색어를 입력하세요..."
+          className="w-full rounded-2xl border-none bg-white dark:bg-slate-800 px-6 py-4 pl-14 shadow-sm outline-none focus:ring-2 focus:ring-blue-500 dark:text-white transition-all"
+          value={displaySearch}
+          onChange={(e) => setDisplaySearch(e.target.value)}
         />
         <Search
-          className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-300"
+          className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-blue-500 transition-colors"
           size={20}
         />
       </div>
 
-      {/* 리스트 섹션 */}
-      <div className="space-y-8">
+      <div className="space-y-6 pb-20">
         {isNotesLoading ? (
           <>
             <SkeletonNote />
@@ -566,22 +589,20 @@ const HomePage = ({ setView }) => {
           filteredNotes.map((note) => (
             <div
               key={note.id}
-              className="group relative rounded-[2.5rem] bg-white p-10 shadow-sm transition-all hover:shadow-xl hover:ring-1 hover:ring-slate-100 animate-in fade-in duration-500"
+              className="group relative rounded-[2rem] md:rounded-[2.5rem] bg-white dark:bg-slate-800 p-6 md:p-10 shadow-sm hover:shadow-2xl transition-all border border-transparent hover:border-slate-100 dark:hover:border-slate-700 animate-in fade-in slide-in-from-bottom-2 duration-500"
             >
               {note.image_url && (
-                <div className="mb-8 overflow-hidden rounded-3xl">
+                <div className="mb-6 md:mb-8 overflow-hidden rounded-3xl">
                   <img
                     src={`${API_URL}${note.image_url}`}
-                    alt="note"
-                    className="max-h-[30rem] w-full object-cover transition-transform group-hover:scale-105"
+                    className="w-full max-h-[30rem] object-cover transition-transform duration-700 group-hover:scale-105"
                   />
                 </div>
               )}
-
               {editingId === note.id ? (
-                <div className="space-y-4">
+                <div className="space-y-4 animate-in zoom-in-95 duration-200">
                   <textarea
-                    className="w-full rounded-2xl bg-slate-50 p-6 text-xl outline-none ring-2 ring-blue-500"
+                    className="w-full rounded-2xl bg-slate-50 dark:bg-slate-900 p-6 text-lg outline-none ring-2 ring-blue-500 dark:text-white"
                     value={editingText}
                     onChange={(e) => setEditingText(e.target.value)}
                     autoFocus
@@ -594,8 +615,11 @@ const HomePage = ({ setView }) => {
                       취소
                     </button>
                     <button
-                      onClick={() => handleUpdate(note.id)}
-                      className="bg-blue-600 text-white px-6 py-2 rounded-xl font-bold shadow-lg"
+                      onClick={async () => {
+                        if (await updateNote(note.id, editingText))
+                          setEditingId(null);
+                      }}
+                      className="bg-blue-600 text-white px-6 py-2 rounded-xl font-bold"
                     >
                       수정 완료
                     </button>
@@ -603,11 +627,14 @@ const HomePage = ({ setView }) => {
                 </div>
               ) : (
                 <>
-                  <p className="text-2xl font-medium leading-relaxed text-slate-700">
-                    <HighlightText text={note.content} highlight={searchTerm} />
+                  <p className="text-xl md:text-2xl font-medium leading-relaxed text-slate-700 dark:text-slate-200">
+                    <HighlightText
+                      text={note.content}
+                      highlight={debouncedSearch}
+                    />
                   </p>
-                  <div className="mt-8 flex items-center justify-between border-t border-slate-50 pt-6">
-                    <time className="text-[10px] font-black uppercase tracking-widest text-slate-300">
+                  <div className="mt-6 md:mt-8 flex items-center justify-between border-t border-slate-50 dark:border-slate-700 pt-6">
+                    <time className="text-[10px] font-black uppercase text-slate-300">
                       {note.date}
                     </time>
                     <div className="flex items-center gap-4 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -616,21 +643,21 @@ const HomePage = ({ setView }) => {
                           setEditingId(note.id);
                           setEditingText(note.content);
                         }}
-                        className="text-blue-400 hover:text-blue-600 transition-colors"
+                        className="text-blue-400 hover:text-blue-600 p-1"
                       >
-                        <Edit3 size={16} />
+                        <Edit3 size={18} />
                       </button>
                       <button
                         onClick={() =>
                           openModal({
-                            title: "기록 삭제",
-                            message: "이 비밀 기록을 영구히 삭제하시겠습니까?",
+                            title: "삭제 확인",
+                            message: "이 기록을 영구 삭제할까요?",
                             onConfirm: () => deleteNote(note.id),
                           })
                         }
-                        className="text-red-200 hover:text-red-500 transition-colors"
+                        className="text-red-200 hover:text-red-500 p-1"
                       >
-                        <Trash2 size={16} />
+                        <Trash2 size={18} />
                       </button>
                     </div>
                   </div>
@@ -640,10 +667,10 @@ const HomePage = ({ setView }) => {
           ))
         )}
         {filteredNotes.length === 0 && !isNotesLoading && (
-          <div className="py-32 text-center">
-            <FileText className="mx-auto mb-4 text-slate-100" size={64} />
-            <p className="font-bold text-slate-200 uppercase tracking-widest">
-              일치하는 기록이 없습니다.
+          <div className="py-24 text-center text-slate-200 dark:text-slate-700">
+            <FileText className="mx-auto mb-4" size={40} />
+            <p className="font-bold tracking-widest uppercase">
+              일치하는 기록 없음
             </p>
           </div>
         )}
