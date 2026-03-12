@@ -56,18 +56,31 @@ db.serialize(() => {
 
 const checkAuth = (req, res, next) => {
   if (req.session && req.session.user) next();
-  else res.status(401).json({ message: "로그인이 필요합니다." });
+  else res.status(401).json({ message: "인증이 필요합니다." });
 };
 
-// --- AUTH API ---
+// --- AUTH API (유효성 검사 추가) ---
 app.post("/api/signup", async (req, res) => {
   const { username, password } = req.body;
+
+  // [보안] 빈 값 체크
+  if (!username || !password || username.length < 2 || password.length < 4) {
+    return res
+      .status(400)
+      .json({
+        message: "아이디(2자 이상)와 비밀번호(4자 이상)를 확인해주세요.",
+      });
+  }
+
   const hashedPassword = await bcrypt.hash(password, 10);
   db.run(
     "INSERT INTO users (username, password) VALUES (?, ?)",
     [username, hashedPassword],
     (err) => {
-      if (err) return res.status(400).json({ message: "아이디 중복" });
+      if (err)
+        return res
+          .status(400)
+          .json({ message: "이미 사용 중인 아이디입니다." });
       res.json({ success: true });
     },
   );
@@ -79,12 +92,13 @@ app.post("/api/login", (req, res) => {
     "SELECT * FROM users WHERE username = ?",
     [username],
     async (err, user) => {
-      if (!user) return res.status(401).json({ message: "사용자 없음" });
+      if (!user)
+        return res.status(401).json({ message: "가입되지 않은 아이디입니다." });
       const isMatch = await bcrypt.compare(password, user.password);
       if (isMatch) {
         req.session.user = { id: user.id, username: user.username };
         req.session.save(() => res.json({ success: true }));
-      } else res.status(401).json({ message: "비번 불일치" });
+      } else res.status(401).json({ message: "비밀번호가 일치하지 않습니다." });
     },
   );
 });
@@ -99,7 +113,7 @@ app.post("/api/logout", (req, res) => {
   req.session.destroy(() => res.json({ success: true }));
 });
 
-// --- CRUD API (PAGINATION ADDED) ---
+// --- CRUD API (유효성 검사 강화) ---
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
@@ -110,14 +124,13 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 app.get("/api/notes", checkAuth, (req, res) => {
-  // [변경] 페이지네이션을 위한 쿼리 파라미터 처리
   const limit = parseInt(req.query.limit) || 5;
   const offset = parseInt(req.query.offset) || 0;
-
   db.all(
     "SELECT * FROM notes WHERE user_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
     [req.session.user.id, limit, offset],
     (err, rows) => {
+      if (err) return res.status(500).json({ message: "서버 오류" });
       res.json(rows || []);
     },
   );
@@ -125,6 +138,13 @@ app.get("/api/notes", checkAuth, (req, res) => {
 
 app.post("/api/notes", checkAuth, upload.single("image"), (req, res) => {
   const { content } = req.body;
+
+  // [데이터 무결성] 서버에서 한 번 더 글자 수 및 존재 여부 체크
+  if (!content || content.trim().length === 0)
+    return res.status(400).json({ message: "내용을 입력하세요." });
+  if (content.length > 500)
+    return res.status(400).json({ message: "500자 이내로 입력하세요." });
+
   const date = new Date().toLocaleString();
   const imageUrl = req.file ? `/uploads/${req.file.filename}` : null;
   db.run(
@@ -138,10 +158,16 @@ app.post("/api/notes", checkAuth, upload.single("image"), (req, res) => {
 
 app.patch("/api/notes/:id", checkAuth, (req, res) => {
   const { content } = req.body;
+  if (!content || content.trim().length === 0)
+    return res.status(400).json({ message: "수정할 내용을 입력하세요." });
+
   db.run(
     "UPDATE notes SET content = ? WHERE id = ? AND user_id = ?",
     [content, req.params.id, req.session.user.id],
-    () => res.json({ success: true }),
+    function (err) {
+      if (err) return res.status(500).json({ message: "수정 중 오류 발생" });
+      res.json({ success: true });
+    },
   );
 });
 
@@ -164,6 +190,4 @@ app.delete("/api/notes/:id", checkAuth, (req, res) => {
   );
 });
 
-app.listen(PORT, () =>
-  console.log(`🚀 Server with Pagination running on ${PORT}`),
-);
+app.listen(PORT, () => console.log(`🚀 Secure Server running on ${PORT}`));

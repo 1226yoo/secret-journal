@@ -18,14 +18,15 @@ import {
   Sun,
   Download,
   ChevronDown,
+  RefreshCcw,
 } from "lucide-react";
 
 /**
- * [FINAL OPTIMIZED MASTER VERSION]
- * 1. 데이터 최적화: 서버 측 페이지네이션(Limit & Offset) 연동 및 '더 보기' 기능
- * 2. 입력 안정성: 글자 수 제한(500자) 및 실시간 글자 수 카운터
- * 3. 계산 최적화: 검색 디바운싱(Debouncing)으로 타이핑 시 성능 부하 방지
- * 4. 아키텍처: Zustand Selector 패턴을 통한 불필요한 리렌더링 차단
+ * [STEP 4-2: ERROR HANDLING MASTER VERSION]
+ * 1. Centralized Error: Zustand store에서 모든 비동기 에러를 통합 관리
+ * 2. Robust UI: 에러 발생 시 '다시 시도' 버튼이 포함된 전용 에러 화면 표시
+ * 3. Double Validation: 클라이언트와 서버 양측에서 데이터 무결성 검증
+ * 4. UX Integrity: 페이지네이션, 디바운싱, 다크모드 등 기존 기능 완벽 유지
  */
 
 // --- API URL 설정 (환경 변수 안전 접근) ---
@@ -39,71 +40,85 @@ const getApiUrl = () => {
 };
 const API_URL = getApiUrl();
 
-// --- [Zustand Store] 중앙 데이터 및 액션 창고 ---
+// --- [Zustand Store] 중앙 데이터 및 에러 관리 창고 ---
 const useStore = create((set, get) => ({
   user: null,
   notes: [],
   isNotesLoading: false,
   isDarkMode: false,
-  hasMore: true, // 추가 데이터가 서버에 더 있는지 여부
+  hasMore: true,
   toast: null,
   modal: null,
+  error: null, // [중앙] 에러 상태
 
-  // -- 테마 및 인증 액션 --
+  // -- Actions --
   setUser: (user) => set({ user }),
   toggleDarkMode: () => set((state) => ({ isDarkMode: !state.isDarkMode })),
+  setError: (msg) => set({ error: msg }), // 에러 수동 설정 액션
 
-  // -- 데이터 로드 액션 (페이지네이션 지원) --
+  // 데이터 로드 (에러 처리 강화)
   fetchNotes: async (isMore = false) => {
-    // 더 불러올 데이터가 없으면 실행 중단
     const { notes, hasMore } = get();
     if (isMore && !hasMore) return;
 
-    set({ isNotesLoading: true });
+    set({ isNotesLoading: true, error: null }); // 요청 시작 시 이전 에러 초기화
     try {
-      // 추가 로딩이면 현재 리스트 끝부터, 처음이면 0부터 시작
       const offset = isMore ? notes.length : 0;
       const res = await fetch(`${API_URL}/api/notes?offset=${offset}&limit=5`, {
         credentials: "include",
       });
 
-      if (res.ok) {
-        const newData = await res.json();
-        set((state) => ({
-          notes: isMore ? [...state.notes, ...newData] : newData,
-          hasMore: newData.length === 5, // 5개를 꽉 채워 가져왔다면 다음 페이지가 있을 가능성이 높음
-        }));
+      if (!res.ok) {
+        // 서버에서 보낸 에러 메시지 추출
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(
+          errorData.message || "서버에서 데이터를 가져오는데 실패했습니다.",
+        );
       }
+
+      const newData = await res.json();
+      set((state) => ({
+        notes: isMore ? [...state.notes, ...newData] : newData,
+        hasMore: newData.length === 5,
+      }));
     } catch (err) {
-      console.error("데이터 통신 에러");
+      set({ error: err.message }); // 발생한 에러를 중앙 상태에 저장
     } finally {
       set({ isNotesLoading: false });
     }
   },
 
-  // -- CRUD 액션 --
+  // 기록 추가 (에러 피드백 강화)
   addNote: async (content, imageFile) => {
-    if (!content.trim() && !imageFile) return false;
-    const formData = new FormData();
-    formData.append("content", content);
-    if (imageFile) formData.append("image", imageFile);
+    if (!content.trim() && !imageFile) {
+      get().showToast("내용을 입력해주세요.", "error");
+      return false;
+    }
 
     try {
+      const formData = new FormData();
+      formData.append("content", content);
+      if (imageFile) formData.append("image", imageFile);
+
       const res = await fetch(`${API_URL}/api/notes`, {
         method: "POST",
         credentials: "include",
         body: formData,
       });
-      if (res.ok) {
-        const saved = await res.json();
-        set((state) => ({ notes: [saved, ...state.notes] }));
-        get().showToast("기록이 금고에 보관되었습니다.");
-        return true;
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.message || "저장 중 문제가 발생했습니다.");
       }
+
+      const saved = await res.json();
+      set((state) => ({ notes: [saved, ...state.notes] }));
+      get().showToast("비밀이 금고에 안전하게 기록되었습니다.");
+      return true;
     } catch (err) {
-      get().showToast("저장 실패", "error");
+      get().showToast(err.message, "error"); // 사용자에게 즉각적인 실패 알림
+      return false;
     }
-    return false;
   },
 
   updateNote: async (id, newContent) => {
@@ -115,19 +130,23 @@ const useStore = create((set, get) => ({
         credentials: "include",
         body: JSON.stringify({ content: newContent }),
       });
-      if (res.ok) {
-        set((state) => ({
-          notes: state.notes.map((n) =>
-            n.id === id ? { ...n, content: newContent } : n,
-          ),
-        }));
-        get().showToast("기록이 수정되었습니다.");
-        return true;
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.message || "수정에 실패했습니다.");
       }
+
+      set((state) => ({
+        notes: state.notes.map((n) =>
+          n.id === id ? { ...n, content: newContent } : n,
+        ),
+      }));
+      get().showToast("수정 완료.");
+      return true;
     } catch (err) {
-      get().showToast("수정 실패", "error");
+      get().showToast(err.message, "error");
+      return false;
     }
-    return false;
   },
 
   deleteNote: async (id) => {
@@ -136,12 +155,12 @@ const useStore = create((set, get) => ({
         method: "DELETE",
         credentials: "include",
       });
-      if (res.ok) {
-        set((state) => ({ notes: state.notes.filter((n) => n.id !== id) }));
-        get().showToast("기록이 영구 삭제되었습니다.");
-      }
+      if (!res.ok) throw new Error("삭제 작업 중 서버 오류가 발생했습니다.");
+
+      set((state) => ({ notes: state.notes.filter((n) => n.id !== id) }));
+      get().showToast("비밀이 완전히 소멸되었습니다.");
     } catch (err) {
-      get().showToast("삭제 실패", "error");
+      get().showToast(err.message, "error");
     }
   },
 
@@ -181,7 +200,7 @@ const HighlightText = ({ text, highlight }) => {
 
 const SkeletonNote = () => (
   <div className="rounded-[2.5rem] bg-white dark:bg-slate-800 p-8 shadow-sm animate-pulse">
-    <div className="mb-6 h-40 w-full rounded-3xl bg-slate-100 dark:bg-slate-700" />
+    <div className="mb-6 h-44 w-full rounded-3xl bg-slate-100 dark:bg-slate-700" />
     <div className="space-y-3">
       <div className="h-6 w-3/4 rounded-lg bg-slate-100 dark:bg-slate-700" />
       <div className="h-6 w-1/2 rounded-lg bg-slate-100 dark:bg-slate-700" />
@@ -203,7 +222,10 @@ const Toast = () => {
         <AlertCircle size={18} />
       )}
       <span className="text-sm font-bold">{toast.message}</span>
-      <button onClick={hideToast} className="ml-2 hover:opacity-70">
+      <button
+        onClick={hideToast}
+        className="ml-2 hover:opacity-70 transition-opacity"
+      >
         <X size={14} />
       </button>
     </div>
@@ -229,7 +251,7 @@ const Modal = () => {
         <div className="flex gap-3">
           <button
             onClick={closeModal}
-            className="flex-1 rounded-2xl bg-slate-100 dark:bg-slate-700 py-4 font-bold text-slate-400 dark:text-slate-300 transition-colors"
+            className="flex-1 rounded-2xl bg-slate-100 dark:bg-slate-700 py-4 font-bold text-slate-400 dark:text-slate-300"
           >
             취소
           </button>
@@ -254,7 +276,6 @@ const App = () => {
   const [view, setView] = useState("login");
   const [initialLoading, setInitialLoading] = useState(true);
 
-  // Selector 패턴: 필요한 값만 선택적으로 구독하여 리렌더링 최적화
   const setUser = useStore((s) => s.setUser);
   const fetchNotes = useStore((s) => s.fetchNotes);
   const isDarkMode = useStore((s) => s.isDarkMode);
@@ -284,7 +305,7 @@ const App = () => {
       <div className="flex h-screen flex-col items-center justify-center bg-white dark:bg-slate-900 transition-colors">
         <Loader2 className="h-10 w-10 animate-spin text-blue-600" />
         <p className="mt-4 font-bold text-slate-300 uppercase tracking-widest text-[10px]">
-          Accessing Vault...
+          Verifying Credentials...
         </p>
       </div>
     );
@@ -309,12 +330,8 @@ const App = () => {
 const LoginPage = ({ setView }) => {
   const [id, setId] = useState("");
   const [pw, setPw] = useState("");
-
-  const setUser = useStore((s) => s.setUser);
-  const fetchNotes = useStore((s) => s.fetchNotes);
-  const showToast = useStore((s) => s.showToast);
-  const isDarkMode = useStore((s) => s.isDarkMode);
-  const toggleDarkMode = useStore((s) => s.toggleDarkMode);
+  const { setUser, fetchNotes, showToast, isDarkMode, toggleDarkMode } =
+    useStore();
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -325,16 +342,23 @@ const LoginPage = ({ setView }) => {
         credentials: "include",
         body: JSON.stringify({ username: id, password: pw }),
       });
+      const data = await res.json();
       if (res.ok) {
         setUser({ username: id });
         setView("home");
         fetchNotes();
-        showToast(`${id}님, 금고가 열렸습니다.`);
+        showToast(`${id}님, 접속을 환영합니다.`);
       } else {
-        showToast("인증에 실패했습니다. 정보를 확인하세요.", "error");
+        showToast(
+          data.message || "아이디 또는 비밀번호가 틀렸습니다.",
+          "error",
+        );
       }
     } catch (err) {
-      showToast("서버 연결 실패", "error");
+      showToast(
+        "서버와 연결할 수 없습니다. 네트워크 상태를 확인하세요.",
+        "error",
+      );
     }
   };
 
@@ -343,7 +367,7 @@ const LoginPage = ({ setView }) => {
       <div className="w-full max-w-sm rounded-[2.5rem] bg-white dark:bg-slate-800 p-10 shadow-2xl relative animate-in fade-in zoom-in duration-300">
         <button
           onClick={toggleDarkMode}
-          className="absolute right-8 top-8 text-slate-200 hover:text-blue-500 transition-colors"
+          className="absolute right-8 top-8 text-slate-200 hover:text-blue-500 transition-colors p-2"
         >
           {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
         </button>
@@ -370,7 +394,7 @@ const LoginPage = ({ setView }) => {
             onChange={(e) => setPw(e.target.value)}
             required
           />
-          <button className="w-full rounded-2xl bg-blue-600 py-4 font-bold text-white shadow-lg active:scale-95 transition-all">
+          <button className="w-full rounded-2xl bg-blue-600 py-4 font-bold text-white shadow-lg active:scale-95 transition-all shadow-blue-200 dark:shadow-none">
             Unlock Vault
           </button>
         </form>
@@ -378,7 +402,7 @@ const LoginPage = ({ setView }) => {
           onClick={() => setView("signup")}
           className="mt-8 text-sm font-bold text-slate-300 hover:text-blue-500 w-full text-center"
         >
-          새로운 비밀 통로 만들기
+          신규 금고 생성하기
         </button>
       </div>
     </div>
@@ -392,16 +416,21 @@ const SignupPage = ({ setView }) => {
 
   const handleSignup = async (e) => {
     e.preventDefault();
-    const res = await fetch(`${API_URL}/api/signup`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: id, password: pw }),
-    });
-    if (res.ok) {
-      showToast("회원가입 완료! 이제 로그인하세요.");
-      setView("login");
-    } else {
-      showToast("이미 사용 중인 ID입니다.", "error");
+    try {
+      const res = await fetch(`${API_URL}/api/signup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: id, password: pw }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast("가입 성공! 이제 로그인하세요.");
+        setView("login");
+      } else {
+        showToast(data.message || "가입 중 오류가 발생했습니다.", "error");
+      }
+    } catch (err) {
+      showToast("서버 연결 실패", "error");
     }
   };
 
@@ -439,7 +468,7 @@ const SignupPage = ({ setView }) => {
           onClick={() => setView("login")}
           className="mt-8 text-sm font-bold text-slate-300 w-full text-center hover:text-slate-500"
         >
-          이미 계정이 있나요?
+          돌아가기
         </button>
       </div>
     </div>
@@ -451,17 +480,18 @@ const HomePage = ({ setView }) => {
   const [newContent, setNewContent] = useState("");
   const [image, setImage] = useState(null);
   const [preview, setPreview] = useState(null);
-  const [displaySearch, setDisplaySearch] = useState(""); // 입력 즉시 반영
-  const [debouncedSearch, setDebouncedSearch] = useState(""); // 0.3초 뒤 반영 (필터링용)
+  const [displaySearch, setDisplaySearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [editingText, setEditingText] = useState("");
 
-  // --- Store Selectors (최적화) ---
+  // --- Store Selectors ---
   const user = useStore((s) => s.user);
   const setUser = useStore((s) => s.setUser);
   const notes = useStore((s) => s.notes);
   const isNotesLoading = useStore((s) => s.isNotesLoading);
   const hasMore = useStore((s) => s.hasMore);
+  const error = useStore((s) => s.error); // 전역 에러 상태
   const fetchNotes = useStore((s) => s.fetchNotes);
   const addNote = useStore((s) => s.addNote);
   const updateNote = useStore((s) => s.updateNote);
@@ -471,12 +501,11 @@ const HomePage = ({ setView }) => {
   const isDarkMode = useStore((s) => s.isDarkMode);
   const toggleDarkMode = useStore((s) => s.toggleDarkMode);
 
-  // 디바운싱 로직: 사용자가 입력을 멈추고 300ms 뒤에 실제 검색어 업데이트
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(displaySearch);
     }, 300);
-    return () => clearTimeout(timer); // 클린업: 다음 타이핑 시 이전 타이머 예약 취소
+    return () => clearTimeout(timer);
   }, [displaySearch]);
 
   const handleLogout = async () => {
@@ -495,9 +524,9 @@ const HomePage = ({ setView }) => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `vault_backup_${new Date().toISOString().split("T")[0]}.json`;
+    link.download = `my_vault_${new Date().toISOString().split("T")[0]}.json`;
     link.click();
-    showToast("백업 파일이 생성되었습니다.");
+    showToast("백업 파일이 저장되었습니다.");
   };
 
   const handleAddNote = async (e) => {
@@ -510,7 +539,6 @@ const HomePage = ({ setView }) => {
     }
   };
 
-  // 필터링 작업은 지연된 검색어(debouncedSearch)를 기준으로 수행
   const filteredNotes = useMemo(
     () =>
       notes.filter((n) =>
@@ -533,7 +561,7 @@ const HomePage = ({ setView }) => {
         <div className="flex items-center gap-2 md:gap-4">
           <button
             onClick={exportData}
-            title="백업하기"
+            title="Export Data"
             className="text-slate-300 hover:text-green-500 transition-colors p-2"
           >
             <Download size={20} />
@@ -553,7 +581,7 @@ const HomePage = ({ setView }) => {
         </div>
       </header>
 
-      {/* 작성 섹션: 글자 수 제한(500자) 및 실시간 카운터 추가 */}
+      {/* 작성 섹션 (500자 제한) */}
       <form
         onSubmit={handleAddNote}
         className="mb-12 overflow-hidden rounded-[2rem] bg-white dark:bg-slate-800 shadow-xl ring-1 ring-slate-200 dark:ring-slate-700 focus-within:ring-2 focus-within:ring-blue-500 transition-all"
@@ -561,7 +589,7 @@ const HomePage = ({ setView }) => {
         <textarea
           className="w-full resize-none border-none bg-transparent p-6 md:p-8 text-lg outline-none dark:text-white placeholder:text-slate-300"
           rows="3"
-          placeholder="기록하고 싶은 비밀이 있나요?"
+          placeholder="오늘의 기밀 사항은 무엇인가요?"
           value={newContent}
           onChange={(e) => setNewContent(e.target.value)}
           maxLength={500}
@@ -615,7 +643,7 @@ const HomePage = ({ setView }) => {
       <div className="mb-10 relative group">
         <input
           type="text"
-          placeholder="기록 검색..."
+          placeholder="검색어를 입력하세요..."
           className="w-full rounded-2xl border-none bg-white dark:bg-slate-800 px-6 py-4 pl-14 shadow-sm outline-none focus:ring-2 focus:ring-blue-500 dark:text-white transition-all"
           value={displaySearch}
           onChange={(e) => setDisplaySearch(e.target.value)}
@@ -626,120 +654,144 @@ const HomePage = ({ setView }) => {
         />
       </div>
 
-      {/* 리스트 섹션 */}
+      {/* [핵심] 에러 UI 및 리스트 섹션 */}
       <div className="space-y-6 md:space-y-8 pb-20">
-        {filteredNotes.map((note) => (
-          <div
-            key={note.id}
-            className="group relative rounded-[2rem] md:rounded-[2.5rem] bg-white dark:bg-slate-800 p-8 shadow-sm hover:shadow-2xl transition-all border border-transparent hover:border-slate-100 dark:hover:border-slate-700 animate-in fade-in slide-in-from-bottom-2 duration-500"
-          >
-            {note.image_url && (
-              <div className="mb-6 md:mb-8 overflow-hidden rounded-3xl">
-                <img
-                  src={`${API_URL}${note.image_url}`}
-                  className="w-full max-h-[30rem] object-cover transition-transform duration-700 group-hover:scale-105"
-                />
-              </div>
-            )}
-
-            {editingId === note.id ? (
-              <div className="space-y-4 animate-in zoom-in-95 duration-200">
-                <textarea
-                  className="w-full rounded-2xl bg-slate-50 dark:bg-slate-900 p-6 text-lg outline-none ring-2 ring-blue-500 dark:text-white"
-                  value={editingText}
-                  onChange={(e) => setEditingText(e.target.value)}
-                  autoFocus
-                  maxLength={500}
-                />
-                <div className="flex justify-end gap-3">
-                  <button
-                    onClick={() => setEditingId(null)}
-                    className="text-sm font-bold text-slate-400"
-                  >
-                    취소
-                  </button>
-                  <button
-                    onClick={async () => {
-                      if (await updateNote(note.id, editingText))
-                        setEditingId(null);
-                    }}
-                    className="bg-blue-600 text-white px-6 py-2 rounded-xl font-bold shadow-lg shadow-blue-200 dark:shadow-none active:scale-95 transition-transform"
-                  >
-                    수정 완료
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <>
-                <p className="text-xl md:text-2xl font-medium leading-relaxed text-slate-700 dark:text-slate-200">
-                  <HighlightText
-                    text={note.content}
-                    highlight={debouncedSearch}
-                  />
-                </p>
-                <div className="mt-6 md:mt-8 flex items-center justify-between border-t border-slate-50 dark:border-slate-700 pt-6">
-                  <time className="text-[10px] font-black uppercase tracking-widest text-slate-300">
-                    {note.date}
-                  </time>
-                  <div className="flex items-center gap-4 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={() => {
-                        setEditingId(note.id);
-                        setEditingText(note.content);
-                      }}
-                      className="text-blue-400 hover:text-blue-600 p-1"
-                      title="수정"
-                    >
-                      <Edit3 size={18} />
-                    </button>
-                    <button
-                      onClick={() =>
-                        openModal({
-                          title: "기록 삭제",
-                          message:
-                            "이 비밀 기록을 영구히 삭제할까요? 삭제 후에는 복구할 수 없습니다.",
-                          onConfirm: () => deleteNote(note.id),
-                        })
-                      }
-                      className="text-red-200 hover:text-red-500 p-1"
-                      title="삭제"
-                    >
-                      <Trash2 size={18} />
-                    </button>
+        {error ? (
+          // (A) 전역 에러 발생 시 보여줄 화면
+          <div className="py-20 text-center space-y-4 animate-in fade-in">
+            <div className="mx-auto w-20 h-20 bg-red-50 dark:bg-red-900/20 text-red-500 rounded-3xl flex items-center justify-center">
+              <AlertCircle size={40} />
+            </div>
+            <div className="space-y-2">
+              <h3 className="text-xl font-bold dark:text-white">
+                데이터 로드 실패
+              </h3>
+              <p className="text-slate-500 dark:text-slate-400 text-sm">
+                {error}
+              </p>
+            </div>
+            <button
+              onClick={() => fetchNotes()}
+              className="px-8 py-3 bg-blue-600 text-white rounded-2xl font-bold flex items-center gap-2 mx-auto hover:bg-blue-700 transition-all active:scale-95"
+            >
+              <RefreshCcw size={18} /> 다시 시도
+            </button>
+          </div>
+        ) : (
+          <>
+            {filteredNotes.map((note) => (
+              <div
+                key={note.id}
+                className="group relative rounded-[2rem] md:rounded-[2.5rem] bg-white dark:bg-slate-800 p-8 shadow-sm hover:shadow-2xl transition-all border border-transparent hover:border-slate-100 dark:hover:border-slate-700 animate-in fade-in slide-in-from-bottom-2 duration-500"
+              >
+                {note.image_url && (
+                  <div className="mb-6 md:mb-8 overflow-hidden rounded-3xl">
+                    <img
+                      src={`${API_URL}${note.image_url}`}
+                      className="w-full max-h-[30rem] object-cover transition-transform duration-700 group-hover:scale-105"
+                    />
                   </div>
-                </div>
+                )}
+
+                {editingId === note.id ? (
+                  <div className="space-y-4 animate-in zoom-in-95 duration-200">
+                    <textarea
+                      className="w-full rounded-2xl bg-slate-50 dark:bg-slate-900 p-6 text-lg outline-none ring-2 ring-blue-500 dark:text-white"
+                      value={editingText}
+                      onChange={(e) => setEditingText(e.target.value)}
+                      autoFocus
+                      maxLength={500}
+                    />
+                    <div className="flex justify-end gap-3">
+                      <button
+                        onClick={() => setEditingId(null)}
+                        className="text-sm font-bold text-slate-400 p-1"
+                      >
+                        취소
+                      </button>
+                      <button
+                        onClick={async () => {
+                          if (await updateNote(note.id, editingText))
+                            setEditingId(null);
+                        }}
+                        className="bg-blue-600 text-white px-6 py-2 rounded-xl font-bold shadow-lg shadow-blue-200 dark:shadow-none active:scale-95 transition-transform"
+                      >
+                        수정 완료
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-xl md:text-2xl font-medium leading-relaxed text-slate-700 dark:text-slate-200">
+                      <HighlightText
+                        text={note.content}
+                        highlight={debouncedSearch}
+                      />
+                    </p>
+                    <div className="mt-6 md:mt-8 flex items-center justify-between border-t border-slate-50 dark:border-slate-700 pt-6">
+                      <time className="text-[10px] font-black uppercase tracking-widest text-slate-300">
+                        {note.date}
+                      </time>
+                      <div className="flex items-center gap-4 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => {
+                            setEditingId(note.id);
+                            setEditingText(note.content);
+                          }}
+                          className="text-blue-400 hover:text-blue-600 p-1"
+                          title="수정"
+                        >
+                          <Edit3 size={20} />
+                        </button>
+                        <button
+                          onClick={() =>
+                            openModal({
+                              title: "기록 삭제",
+                              message:
+                                "이 비밀 기록을 영구히 삭제할까요? 삭제 후에는 복구할 수 없습니다.",
+                              onConfirm: () => deleteNote(note.id),
+                            })
+                          }
+                          className="text-red-200 hover:text-red-500 p-1"
+                          title="삭제"
+                        >
+                          <Trash2 size={20} />
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            ))}
+
+            {isNotesLoading && (
+              <>
+                <SkeletonNote />
+                <SkeletonNote />
               </>
             )}
-          </div>
-        ))}
 
-        {/* 로딩 스켈레톤 및 '더 보기' 버튼 */}
-        {isNotesLoading && (
-          <>
-            <SkeletonNote />
-            <SkeletonNote />
+            {!isNotesLoading && hasMore && notes.length >= 5 && (
+              <button
+                onClick={() => fetchNotes(true)}
+                className="w-full py-4 rounded-[2rem] bg-white dark:bg-slate-800 text-slate-400 font-bold flex items-center justify-center gap-2 hover:bg-slate-100 dark:hover:bg-slate-700 transition-all active:scale-95 shadow-sm border border-slate-100 dark:border-slate-700"
+              >
+                <ChevronDown size={20} /> Load More Secrets
+              </button>
+            )}
+
+            {filteredNotes.length === 0 && !isNotesLoading && (
+              <div className="py-24 text-center">
+                <FileText
+                  className="mx-auto mb-4 text-slate-100 dark:text-slate-800"
+                  size={64}
+                />
+                <p className="font-bold text-slate-200 dark:text-slate-700 tracking-widest uppercase">
+                  일치하는 기록이 없습니다.
+                </p>
+              </div>
+            )}
           </>
-        )}
-
-        {!isNotesLoading && hasMore && notes.length >= 5 && (
-          <button
-            onClick={() => fetchNotes(true)}
-            className="w-full py-4 rounded-[2rem] bg-white dark:bg-slate-800 text-slate-400 font-bold flex items-center justify-center gap-2 hover:bg-slate-100 dark:hover:bg-slate-700 transition-all active:scale-95 shadow-sm border border-slate-100 dark:border-slate-700"
-          >
-            <ChevronDown size={20} /> Load More Secrets
-          </button>
-        )}
-
-        {filteredNotes.length === 0 && !isNotesLoading && (
-          <div className="py-24 text-center">
-            <FileText
-              className="mx-auto mb-4 text-slate-100 dark:text-slate-800"
-              size={64}
-            />
-            <p className="font-bold text-slate-200 dark:text-slate-700 tracking-widest uppercase">
-              일치하는 기록이 없습니다.
-            </p>
-          </div>
         )}
       </div>
     </div>
