@@ -16,7 +16,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT || 10000;
-const SESSION_SECRET = process.env.SESSION_SECRET || "your-fallback-secret";
+const SESSION_SECRET = process.env.SESSION_SECRET || "your-secret";
 const DB_PATH = path.join(__dirname, process.env.DB_PATH || "journal.sqlite");
 const ORIGIN_URL = process.env.ORIGIN_URL || "http://localhost:5173";
 
@@ -79,13 +79,12 @@ app.post("/api/login", (req, res) => {
     "SELECT * FROM users WHERE username = ?",
     [username],
     async (err, user) => {
-      if (!user)
-        return res.status(401).json({ message: "사용자를 찾을 수 없음" });
+      if (!user) return res.status(401).json({ message: "사용자 없음" });
       const isMatch = await bcrypt.compare(password, user.password);
       if (isMatch) {
         req.session.user = { id: user.id, username: user.username };
         req.session.save(() => res.json({ success: true }));
-      } else res.status(401).json({ message: "비밀번호 불일치" });
+      } else res.status(401).json({ message: "비번 불일치" });
     },
   );
 });
@@ -100,7 +99,7 @@ app.post("/api/logout", (req, res) => {
   req.session.destroy(() => res.json({ success: true }));
 });
 
-// --- CRUD API ---
+// --- CRUD API (PAGINATION ADDED) ---
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
@@ -111,9 +110,13 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 app.get("/api/notes", checkAuth, (req, res) => {
+  // [변경] 페이지네이션을 위한 쿼리 파라미터 처리
+  const limit = parseInt(req.query.limit) || 5;
+  const offset = parseInt(req.query.offset) || 0;
+
   db.all(
-    "SELECT * FROM notes WHERE user_id = ? ORDER BY id DESC",
-    [req.session.user.id],
+    "SELECT * FROM notes WHERE user_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+    [req.session.user.id, limit, offset],
     (err, rows) => {
       res.json(rows || []);
     },
@@ -133,16 +136,12 @@ app.post("/api/notes", checkAuth, upload.single("image"), (req, res) => {
   );
 });
 
-// [추가] 메모 수정 API (PATCH)
 app.patch("/api/notes/:id", checkAuth, (req, res) => {
   const { content } = req.body;
   db.run(
     "UPDATE notes SET content = ? WHERE id = ? AND user_id = ?",
     [content, req.params.id, req.session.user.id],
-    function (err) {
-      if (err) return res.status(500).json({ message: "수정 실패" });
-      res.json({ success: true });
-    },
+    () => res.json({ success: true }),
   );
 });
 
@@ -165,4 +164,6 @@ app.delete("/api/notes/:id", checkAuth, (req, res) => {
   );
 });
 
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`🚀 Server with Pagination running on ${PORT}`),
+);
