@@ -81,7 +81,17 @@ const checkAuth = (req, res, next) => {
   else res.status(401).json({ message: "로그인이 필요합니다." });
 };
 
-// --- API 로직들 (문법 변경: ? -> $1, $2) ---
+// --- [수정] 파일 업로드 기계(multer) 설정 ---
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadDir),
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, uniqueSuffix + path.extname(file.originalname));
+  },
+});
+const upload = multer({ storage: storage });
+
+// --- API 로직들 ---
 
 app.post("/api/signup", async (req, res) => {
   const { username, password } = req.body;
@@ -118,11 +128,16 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
+app.get("/api/me", (req, res) => {
+  if (req.session.user)
+    res.json({ isLoggedIn: true, username: req.session.user.username });
+  else res.json({ isLoggedIn: false });
+});
+
 app.get("/api/notes", checkAuth, async (req, res) => {
   const limit = parseInt(req.query.limit) || 5;
   const offset = parseInt(req.query.offset) || 0;
   try {
-    // Postgres용 페이지네이션 쿼리
     const result = await pool.query(
       "SELECT * FROM notes WHERE user_id = $1 ORDER BY id DESC LIMIT $2 OFFSET $3",
       [req.session.user.id, limit, offset],
@@ -148,7 +163,44 @@ app.post("/api/notes", checkAuth, upload.single("image"), async (req, res) => {
   }
 });
 
-// ... 나머지 PATCH, DELETE 도 동일하게 pool.query와 $1 문법으로 변경됨
+app.patch("/api/notes/:id", checkAuth, async (req, res) => {
+  const { content } = req.body;
+  try {
+    await pool.query(
+      "UPDATE notes SET content = $1 WHERE id = $2 AND user_id = $3",
+      [content, req.params.id, req.session.user.id],
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json(err);
+  }
+});
+
+app.delete("/api/notes/:id", checkAuth, async (req, res) => {
+  const noteId = req.params.id;
+  const userId = req.session.user.id;
+  try {
+    const result = await pool.query(
+      "SELECT image_url FROM notes WHERE id = $1 AND user_id = $2",
+      [noteId, userId],
+    );
+    if (result.rows[0]?.image_url) {
+      const absPath = path.join(__dirname, result.rows[0].image_url);
+      if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
+    }
+    await pool.query("DELETE FROM notes WHERE id = $1 AND user_id = $2", [
+      noteId,
+      userId,
+    ]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json(err);
+  }
+});
+
+app.post("/api/logout", (req, res) => {
+  req.session.destroy(() => res.json({ success: true }));
+});
 
 app.listen(PORT, () =>
   console.log(`🚀 Supabase Vault Server running on ${PORT}`),
