@@ -22,10 +22,10 @@ import {
 } from "lucide-react";
 
 /**
- * [STEP 6-Final: OAuth + Note Registration Integrated]
- * 1. Auth: Supabase OAuth (GitHub/Google) 연동 및 세션 유지
- * 2. Feature: 이미지 압축 로직 + 글 등록(Add Note) 폼 UI 복구
- * 3. Security: 모든 API 요청(GET/POST/DELETE)에 Bearer JWT 토큰 포함
+ * [STEP 6-Final: OAuth + Note Registration Integrated - Bug Fixed]
+ * 1. Auth: Supabase OAuth 연동 및 최신 세션 토큰 강제 적용
+ * 2. Feature: 이미지 압축 및 상세 에러 로깅 추가
+ * 3. Security: 모든 API 요청에 Bearer JWT 토큰 포함 및 401 에러 대응
  */
 
 // --- 환경 변수 안전 로더 ---
@@ -109,23 +109,35 @@ const useStore = create((set, get) => ({
   fetchNotes: async (isMore = false) => {
     const { notes, hasMore } = get();
     if (isMore && !hasMore) return;
+
     set({ isNotesLoading: true, error: null });
     try {
+      // 항상 최신 세션에서 토큰을 가져옵니다.
       const {
         data: { session },
+        error: authError,
       } = await supabase.auth.getSession();
-      if (!session) throw new Error("Authentication required.");
+      if (authError || !session)
+        throw new Error("인증 세션이 만료되었습니다. 다시 로그인해주세요.");
+
       const offset = isMore ? notes.length : 0;
       const res = await fetch(`${API_URL}/api/notes?offset=${offset}&limit=5`, {
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
-      if (!res.ok) throw new Error("Failed to fetch records.");
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.message || `서버 응답 오류: ${res.status}`);
+      }
+
       const newData = await res.json();
       set((state) => ({
         notes: isMore ? [...state.notes, ...newData] : newData,
         hasMore: newData.length === 5,
+        error: null, // 성공 시 에러 초기화
       }));
     } catch (err) {
+      console.error("Fetch Error:", err);
       set({ error: err.message });
     } finally {
       set({ isNotesLoading: false });
@@ -139,24 +151,34 @@ const useStore = create((set, get) => ({
     try {
       const {
         data: { session },
+        error: authError,
       } = await supabase.auth.getSession();
+      if (authError || !session) throw new Error("인증이 필요합니다.");
+
       const formData = new FormData();
       formData.append("content", content);
       if (imageFile) {
         const compressed = await compressImage(imageFile);
         formData.append("image", compressed);
       }
+
       const res = await fetch(`${API_URL}/api/notes`, {
         method: "POST",
         headers: { Authorization: `Bearer ${session.access_token}` },
         body: formData,
       });
-      if (!res.ok) throw new Error("Failed to save secret.");
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.message || `저장 실패: ${res.status}`);
+      }
+
       const saved = await res.json();
-      set((state) => ({ notes: [saved, ...state.notes] }));
+      set((state) => ({ notes: [saved, ...state.notes], error: null }));
       get().showToast("비밀이 성공적으로 봉인되었습니다.");
       return true;
     } catch (err) {
+      console.error("Add Note Error:", err);
       get().showToast(err.message, "error");
       return false;
     } finally {
@@ -174,12 +196,12 @@ const useStore = create((set, get) => ({
         method: "DELETE",
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
-      if (res.ok) {
-        set((state) => ({ notes: state.notes.filter((n) => n.id !== id) }));
-        get().showToast("기록이 소멸되었습니다.");
-      }
+      if (!res.ok) throw new Error("삭제 권한이 없거나 오류가 발생했습니다.");
+
+      set((state) => ({ notes: state.notes.filter((n) => n.id !== id) }));
+      get().showToast("기록이 소멸되었습니다.");
     } catch (err) {
-      get().showToast("Deletion failed", "error");
+      get().showToast(err.message, "error");
     }
   },
 
@@ -305,6 +327,7 @@ const HomePage = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (isUploading) return;
     const ok = await addNote(content, image);
     if (ok) {
       setContent("");
@@ -346,7 +369,7 @@ const HomePage = () => {
         </div>
       </header>
 
-      {/* [복구 완료] 글 등록 폼 섹션 */}
+      {/* 글 등록 폼 섹션 */}
       <form
         onSubmit={handleSubmit}
         className="mb-12 bg-white dark:bg-slate-800 rounded-[2rem] shadow-xl overflow-hidden ring-1 ring-slate-100 dark:ring-slate-700"
@@ -424,52 +447,66 @@ const HomePage = () => {
       </div>
 
       <div className="space-y-6">
+        {/* 에러가 있는 경우에만 에러 컴포넌트 표시 */}
         {error ? (
           <div className="text-center py-12">
+            <AlertCircle className="mx-auto text-red-500 mb-2" size={32} />
             <p className="text-red-500 mb-4">{error}</p>
             <button
               onClick={() => fetchNotes()}
               className="text-blue-500 font-bold flex items-center gap-2 mx-auto"
             >
-              <RefreshCcw size={16} /> Retry
+              <RefreshCcw size={16} /> 다시 시도
             </button>
           </div>
         ) : (
-          filteredNotes.map((note) => (
-            <div
-              key={note.id}
-              className="bg-white dark:bg-slate-800 p-8 rounded-[2.5rem] shadow-sm animate-in fade-in slide-in-from-bottom-2 duration-500"
-            >
-              {note.image_url && (
-                <div className="mb-6 rounded-3xl overflow-hidden bg-slate-100 dark:bg-slate-900">
-                  <img
-                    src={`${API_URL}${note.image_url}`}
-                    className="w-full max-h-96 object-cover"
-                  />
-                </div>
-              )}
-              <p className="text-xl font-medium leading-relaxed mb-6">
-                {note.content}
-              </p>
-              <div className="flex justify-between items-center opacity-40">
-                <span className="text-[10px] font-black uppercase tracking-widest">
-                  {note.date}
-                </span>
-                <button
-                  onClick={() =>
-                    openModal({
-                      title: "Delete Record?",
-                      onConfirm: () => deleteNote(note.id),
-                    })
-                  }
-                  className="hover:text-red-500 transition-colors"
-                >
-                  <Trash2 size={18} />
-                </button>
+          <>
+            {/* 데이터가 없는 경우 (새 계정) */}
+            {filteredNotes.length === 0 && !isNotesLoading ? (
+              <div className="text-center py-20 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-[3rem]">
+                <p className="text-slate-300 font-bold uppercase tracking-widest text-xs">
+                  아직 저장된 비밀이 없습니다
+                </p>
               </div>
-            </div>
-          ))
+            ) : (
+              filteredNotes.map((note) => (
+                <div
+                  key={note.id}
+                  className="bg-white dark:bg-slate-800 p-8 rounded-[2.5rem] shadow-sm animate-in fade-in slide-in-from-bottom-2 duration-500"
+                >
+                  {note.image_url && (
+                    <div className="mb-6 rounded-3xl overflow-hidden bg-slate-100 dark:bg-slate-900">
+                      <img
+                        src={`${API_URL}${note.image_url}`}
+                        className="w-full max-h-96 object-cover"
+                      />
+                    </div>
+                  )}
+                  <p className="text-xl font-medium leading-relaxed mb-6">
+                    {note.content}
+                  </p>
+                  <div className="flex justify-between items-center opacity-40">
+                    <span className="text-[10px] font-black uppercase tracking-widest">
+                      {note.date}
+                    </span>
+                    <button
+                      onClick={() =>
+                        openModal({
+                          title: "Delete Record?",
+                          onConfirm: () => deleteNote(note.id),
+                        })
+                      }
+                      className="hover:text-red-500 transition-colors"
+                    >
+                      <Trash2 size={18} />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </>
         )}
+
         {isNotesLoading && (
           <div className="flex justify-center py-10">
             <Loader2 className="animate-spin text-blue-500" size={32} />
@@ -493,12 +530,10 @@ const App = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // 1. 초기 세션 확인
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
       setLoading(false);
     });
-    // 2. 실시간 인증 상태 구독
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_e, session) =>
