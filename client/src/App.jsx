@@ -23,23 +23,43 @@ import {
 } from "lucide-react";
 
 /**
- * [STEP 6: OAuth & Supabase Auth Integration - Fixed Version]
- * 1. CDN Import: @supabase/supabase-js를 esm.sh를 통해 로드하여 컴파일 오류 해결
- * 2. Auth Flow: 소셜 로그인(GitHub/Google) 및 세션 유지 로직 완성
- * 3. UI/UX: 로딩 상태 처리 및 전역 토스트/모달 시스템 통합
+ * [STEP 6: OAuth & Supabase Auth Integration - Environment Compatibility Fix]
+ * 1. Compatibility Fix: import.meta 미지원 환경을 위한 안전한 환경 변수 접근 로직 적용
+ * 2. Auth Flow: 소셜 로그인(GitHub/Google) 및 JWT 기반 세션 관리
+ * 3. Security: 클라이언트 측 API 호출 시 Authorization 헤더 자동 포함
  */
 
-// --- Supabase 설정 (사용자 정보로 교체 필요) ---
-const SUPABASE_URL = "https://your-project-url.supabase.co";
-const SUPABASE_ANON_KEY = "your-anon-key";
+// --- 안전한 환경 변수 로더 ---
+const getEnv = (key) => {
+  try {
+    // import.meta가 지원되지 않는 환경을 위해 try-catch와 타입 체크를 병행합니다.
+    if (
+      typeof import.meta !== "undefined" &&
+      import.meta.env &&
+      import.meta.env[key]
+    ) {
+      return import.meta.env[key];
+    }
+  } catch (e) {}
+  return "";
+};
+
+const SUPABASE_URL = getEnv("VITE_SUPABASE_URL") || "";
+const SUPABASE_ANON_KEY = getEnv("VITE_SUPABASE_ANON_KEY") || "";
+
+// 설정이 비어있을 경우 개발자에게 경고를 표시합니다.
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  console.warn(
+    "VAULT: Supabase 설정(URL/KEY)이 누락되었습니다. .env 파일을 확인하거나 하드코딩이 필요한지 검토하세요.",
+  );
+}
+
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const getApiUrl = () => {
   let url = "http://localhost:10000";
-  try {
-    const metaEnv = typeof import.meta !== "undefined" ? import.meta.env : null;
-    if (metaEnv && metaEnv.VITE_API_URL) url = metaEnv.VITE_API_URL;
-  } catch (e) {}
+  const envUrl = getEnv("VITE_API_URL");
+  if (envUrl) url = envUrl;
   return url.replace(/\/$/, "");
 };
 const API_URL = getApiUrl();
@@ -58,7 +78,7 @@ const useStore = create((set, get) => ({
   setUser: (user) => set({ user }),
   toggleDarkMode: () => set((state) => ({ isDarkMode: !state.isDarkMode })),
 
-  // 노트 목록 가져오기 (JWT 인증 헤더 포함)
+  // JWT 인증 헤더를 포함한 노트 목록 가져오기
   fetchNotes: async (isMore = false) => {
     const { notes, hasMore } = get();
     if (isMore && !hasMore) return;
@@ -68,7 +88,7 @@ const useStore = create((set, get) => ({
       const {
         data: { session },
       } = await supabase.auth.getSession();
-      if (!session) throw new Error("로그인이 필요합니다.");
+      if (!session) throw new Error("Authentication required.");
 
       const offset = isMore ? notes.length : 0;
       const res = await fetch(`${API_URL}/api/notes?offset=${offset}&limit=5`, {
@@ -77,7 +97,7 @@ const useStore = create((set, get) => ({
         },
       });
 
-      if (!res.ok) throw new Error("기록을 불러오지 못했습니다.");
+      if (!res.ok) throw new Error("Failed to fetch records.");
       const newData = await res.json();
 
       set((state) => ({
@@ -86,6 +106,7 @@ const useStore = create((set, get) => ({
       }));
     } catch (err) {
       set({ error: err.message });
+      console.error(err);
     } finally {
       set({ isNotesLoading: false });
     }
@@ -100,7 +121,7 @@ const useStore = create((set, get) => ({
   closeModal: () => set({ modal: null }),
 }));
 
-// --- [UI Helpers] ---
+// --- [UI Components] ---
 const Toast = () => {
   const toast = useStore((s) => s.toast);
   const hideToast = useStore((s) => s.hideToast);
@@ -205,7 +226,7 @@ const LoginPage = () => {
         </div>
 
         <p className="mt-8 text-center text-[10px] text-slate-400 font-black uppercase tracking-widest">
-          Secure Multi-Factor Authentication
+          Secure Authentication System
         </p>
       </div>
     </div>
@@ -231,7 +252,7 @@ const HomePage = () => {
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
-    showToast("성공적으로 로그아웃되었습니다.");
+    showToast("Successfully logged out.");
   };
 
   const filteredNotes = useMemo(
@@ -271,7 +292,7 @@ const HomePage = () => {
       <div className="mb-10 relative group">
         <input
           type="text"
-          placeholder="비밀 기록 검색..."
+          placeholder="Search records..."
           className="w-full rounded-2xl border-none bg-white dark:bg-slate-800 px-6 py-4 pl-14 shadow-sm outline-none focus:ring-2 focus:ring-blue-500 dark:text-white transition-all"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -347,7 +368,7 @@ const App = () => {
       setLoading(false);
     });
 
-    // 2. 인증 상태 리스너 (실시간)
+    // 2. 인증 상태 리스너
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
