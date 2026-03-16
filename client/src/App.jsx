@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo } from "react";
-// CDN을 통해 Supabase 라이브러리를 안전하게 불러옵니다.
 import { createClient } from "https://esm.sh/@supabase/supabase-js";
 import { create } from "zustand";
 import {
@@ -24,12 +23,11 @@ import {
 } from "lucide-react";
 
 /**
- * [STEP 7: Supabase Storage Integration]
- * - 이제 이미지는 서버 하드디스크가 아닌 Supabase 클라우드에 저장됩니다.
- * - DB에는 이미지의 전체 웹 주소(https://...)가 저장되므로, 클라이언트는 이를 그대로 사용합니다.
+ * [UX 및 보안 개선 버전]
+ * 1. 테마(Dark/Light)를 로컬 스토리지에 저장하여 새로고침 시 유지
+ * 2. Supabase Auth 스토리지 설정을 세션스토리지로 변경 (브라우저 종료 시 로그아웃 - 주석 처리됨)
  */
 
-// --- [환경 변수 로더] ---
 const getEnv = (key) => {
   try {
     if (
@@ -45,6 +43,9 @@ const getEnv = (key) => {
 
 const SUPABASE_URL = getEnv("VITE_SUPABASE_URL") || "";
 const SUPABASE_ANON_KEY = getEnv("VITE_SUPABASE_ANON_KEY") || "";
+
+// [수정 포인트] 브라우저 종료 시 로그아웃되길 원한다면 아래 주석을 해제하고 교체하세요.
+// const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { storage: window.sessionStorage } });
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const getApiUrl = () => {
@@ -55,7 +56,6 @@ const getApiUrl = () => {
 };
 const API_URL = getApiUrl();
 
-// --- [이미지 압축 유틸리티] ---
 const compressImage = (file) => {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -96,14 +96,22 @@ const useStore = create((set, get) => ({
   notes: [],
   isNotesLoading: false,
   isUploading: false,
-  isDarkMode: false,
+  // [수정 포인트] 시작할 때 로컬 스토리지에서 이전 테마 설정을 불러옵니다.
+  isDarkMode: localStorage.getItem("vault_theme") === "dark",
   hasMore: true,
   toast: null,
   modal: null,
   error: null,
 
   setUser: (user) => set({ user }),
-  toggleDarkMode: () => set((state) => ({ isDarkMode: !state.isDarkMode })),
+
+  // [수정 포인트] 테마를 바꿀 때 로컬 스토리지에 저장합니다.
+  toggleDarkMode: () =>
+    set((state) => {
+      const newTheme = !state.isDarkMode;
+      localStorage.setItem("vault_theme", newTheme ? "dark" : "light");
+      return { isDarkMode: newTheme };
+    }),
 
   fetchNotes: async (isMore = false) => {
     const { notes, hasMore } = get();
@@ -121,7 +129,6 @@ const useStore = create((set, get) => ({
       const res = await fetch(`${API_URL}/api/notes?offset=${offset}&limit=5`, {
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
-
       if (!res.ok) throw new Error("데이터 로드에 실패했습니다.");
 
       const newData = await res.json();
@@ -150,13 +157,11 @@ const useStore = create((set, get) => ({
         const compressed = await compressImage(imageFile);
         formData.append("image", compressed);
       }
-
       const res = await fetch(`${API_URL}/api/notes`, {
         method: "POST",
         headers: { Authorization: `Bearer ${session.access_token}` },
         body: formData,
       });
-
       if (!res.ok) throw new Error("저장에 실패했습니다.");
       const saved = await res.json();
       set((state) => ({ notes: [saved, ...state.notes], error: null }));
@@ -317,14 +322,14 @@ const LoginPage = () => {
       <div className="w-full max-w-sm rounded-[2.5rem] bg-white dark:bg-slate-800 p-10 shadow-2xl relative animate-in zoom-in duration-300">
         <button
           onClick={toggleDarkMode}
-          className="absolute right-8 top-8 text-slate-200 hover:text-blue-500"
+          className="absolute right-8 top-8 text-slate-300 hover:text-blue-500 transition-colors"
         >
-          <Sun size={20} />
+          {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
         </button>
         <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-50 dark:bg-blue-900/20 text-blue-600">
           <Lock size={32} />
         </div>
-        <h1 className="text-3xl font-black italic tracking-tighter text-center mb-10">
+        <h1 className="text-3xl font-black italic tracking-tighter text-center mb-10 text-slate-900 dark:text-white">
           VAULT
         </h1>
         <div className="space-y-4">
@@ -346,7 +351,7 @@ const LoginPage = () => {
                 options: { redirectTo: window.location.origin },
               })
             }
-            className="w-full flex items-center justify-center gap-3 rounded-2xl bg-white border border-slate-200 text-slate-700 py-4 font-bold active:scale-95 transition-all"
+            className="w-full flex items-center justify-center gap-3 rounded-2xl bg-white border border-slate-200 text-slate-700 py-4 font-bold active:scale-95 transition-all hover:bg-slate-50"
           >
             <img
               src="https://www.google.com/favicon.ico"
@@ -385,13 +390,10 @@ const HomePage = () => {
   const [editingId, setEditingId] = useState(null);
   const [editingText, setEditingText] = useState("");
 
-  // 디바운싱: 검색어 입력 후 300ms 대기
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(displaySearch), 300);
     return () => clearTimeout(timer);
   }, [displaySearch]);
-
-  // 초기 데이터 로드
   useEffect(() => {
     fetchNotes();
   }, [fetchNotes]);
@@ -442,7 +444,6 @@ const HomePage = () => {
         </div>
       </header>
 
-      {/* 등록 폼 */}
       <form
         onSubmit={handleAddNote}
         className="mb-12 overflow-hidden rounded-[2rem] bg-white dark:bg-slate-800 shadow-xl ring-1 ring-slate-100 dark:ring-slate-700"
@@ -512,7 +513,6 @@ const HomePage = () => {
         </div>
       </form>
 
-      {/* 검색 바 */}
       <div className="mb-10 relative group">
         <input
           type="text"
@@ -527,7 +527,6 @@ const HomePage = () => {
         />
       </div>
 
-      {/* 기록 리스트 */}
       <div className="space-y-6 pb-20">
         {error ? (
           <div className="py-20 text-center">
@@ -547,7 +546,6 @@ const HomePage = () => {
                 key={note.id}
                 className="group relative rounded-[2.5rem] bg-white dark:bg-slate-800 p-8 shadow-sm hover:shadow-2xl transition-all animate-in fade-in slide-in-from-bottom-2 duration-500"
               >
-                {/* [핵심 변경점] Supabase Storage가 반환한 절대 주소(http...)를 그대로 사용하거나, 기존 로컬 주소를 호환 처리합니다. */}
                 {note.image_url && (
                   <div className="mb-8 overflow-hidden rounded-3xl bg-slate-50 dark:bg-slate-900">
                     <img
@@ -669,13 +667,11 @@ const App = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // 앱 진입 시 세션 확인
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
       setLoading(false);
     });
 
-    // Auth 상태 변화 감지 리스너
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_e, session) =>
